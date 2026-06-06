@@ -7,6 +7,8 @@ namespace macro_osc
 {
 namespace
 {
+constexpr int kMaxPolyphony = 8;
+
 juce::NormalisableRange<float> skewedRange (float start, float end, float interval, float skew)
 {
     return { start, end, interval, skew };
@@ -40,7 +42,7 @@ MacroOscAudioProcessor::MacroOscAudioProcessor()
       parameters (*this, nullptr, "MacroOscState", createParameterLayout())
 {
     synth.addSound (new BraidsSound());
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < kMaxPolyphony; ++i)
         synth.addVoice (new BraidsVoice());
     synth.setNoteStealingEnabled (true);
 

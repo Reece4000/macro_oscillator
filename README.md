@@ -4,6 +4,8 @@ Macro OSC is a compact software synthesizer built around the Mutable Instruments
 
 The plugin is designed as a hands-on sound design instrument: choose an oscillator model, shape its core tone from the main panel, then use the MSEG modulators to add evolving movement without leaving the device.
 
+![Macro OSC user interface](ui.png)
+
 ## Highlights
 
 - Braids-derived macro oscillator DSP with a broad range of digital oscillator models.

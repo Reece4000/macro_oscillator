@@ -79,3 +79,13 @@ target_link_libraries(MacroOsc
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+if (TARGET MacroOsc_Standalone)
+    target_sources(MacroOsc_Standalone
+        PRIVATE
+            Source/StandaloneApp.cpp)
+
+    target_compile_definitions(MacroOsc_Standalone
+        PRIVATE
+            JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+endif()

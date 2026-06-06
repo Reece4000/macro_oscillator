@@ -26,6 +26,8 @@ public:
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
@@ -127,17 +129,38 @@ public:
     void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
+    enum class DragMode
+    {
+        none,
+        curvePoint,
+        offset,
+        scale,
+        duration
+    };
+
     MacroOscAudioProcessor& audioProcessor;
     EditorFonts fonts;
     std::vector<MsegPoint> points;
     int activeSlot {};
     int selectedIndex { -1 };
     bool editing {};
+    DragMode dragMode { DragMode::none };
 
     [[nodiscard]] juce::Rectangle<float> graphBounds() const;
+    [[nodiscard]] juce::Rectangle<float> offsetSliderBounds() const;
+    [[nodiscard]] juce::Rectangle<float> scaleSliderBounds() const;
+    [[nodiscard]] juce::Rectangle<float> durationSliderBounds() const;
+    [[nodiscard]] juce::Rectangle<float> offsetLabelBounds() const;
+    [[nodiscard]] juce::Rectangle<float> scaleLabelBounds() const;
     [[nodiscard]] juce::Point<float> pointToScreen (const MsegPoint& point) const;
     [[nodiscard]] MsegPoint screenToPoint (juce::Point<float> position) const;
     [[nodiscard]] int findNearestPoint (juce::Point<float> position) const;
+    [[nodiscard]] DragMode sliderAtPosition (juce::Point<float> position) const;
+    [[nodiscard]] const char* parameterForDragMode (DragMode mode) const;
+    [[nodiscard]] float normalisedParameterValue (const char* parameterId) const;
+    void setSliderFromPosition (DragMode mode, juce::Point<float> position);
+    void beginParameterGesture (DragMode mode);
+    void endParameterGesture (DragMode mode);
     bool deletePointNear (juce::Point<float> position);
     void commit (bool notifyEditor);
 };
@@ -170,9 +193,6 @@ private:
     RackValueBox releaseBox;
     MsegSlotStrip msegSlots;
     MsegCurveEditor msegEditor;
-    RackValueBox msegAmountBox;
-    RackValueBox msegOffsetBox;
-    RackValueBox msegRateBox;
     juce::ComboBox destinationBox;
     juce::ToggleButton loopButton;
     std::unique_ptr<ComboBoxAttachment> destinationAttachment;
