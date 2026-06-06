@@ -345,7 +345,7 @@ void DevicePanel::paintModelDisplay (juce::Graphics& g)
     g.setFont (withHeight (fonts.digital, badge.getHeight() * 0.86f));
     g.drawFittedText (juce::String (modelIndex).paddedLeft ('0', 2), badge.toNearestInt().reduced (2), juce::Justification::centred, 1);
 
-    auto screen = designRect (472.0f, 98.0f, 875.0f, 112.0f);
+    auto screen = designRect (428.0f, 76.0f, 960.0f, 122.0f);
     const int pitch = juce::jmax (3, juce::roundToInt (screen.getHeight() * 0.08f));
     g.setColour (yellowAccent.withAlpha (active ? 0.06f : 0.04f));
     for (float y = screen.getY(); y < screen.getBottom(); y += static_cast<float> (pitch))
@@ -353,11 +353,11 @@ void DevicePanel::paintModelDisplay (juce::Graphics& g)
             g.fillRect (juce::Rectangle<float> (x + 1.0f, y + 1.0f, 1.0f, 1.0f));
 
     g.setColour (active ? yellowAccent.brighter (0.35f) : yellowAccent);
-    g.setFont (withHeight (fonts.digital, screen.getHeight() * 0.78f));
+    g.setFont (withHeight (fonts.digital, screen.getHeight() * 0.92f));
     g.drawFittedText (modelDisplayText(), screen.toNearestInt(),
                       juce::Justification::centred, 1);
 
-    const auto dashArea = designRect (438.0f, 204.0f, 930.0f, 23.0f);
+    const auto dashArea = designRect (396.0f, 236.0f, 1018.0f, 20.0f);
     const int dashCount = modelNames.size();
     const int activeDash = dashCount > 1 ? juce::roundToInt ((static_cast<float> (modelIndex) / static_cast<float> (dashCount - 1)) * static_cast<float> (dashCount - 1)) : 0;
     const float gap = juce::jmax (1.0f, dashArea.getWidth() / 180.0f);
@@ -423,10 +423,34 @@ void RackValueBox::configure (const juce::String& labelText,
 void RackValueBox::paint (juce::Graphics& g)
 {
     const auto bounds = getLocalBounds().toFloat().reduced (1.0f);
-    g.setColour (boxColour);
-    g.fillRoundedRectangle (bounds, 4.0f);
-    g.setColour (accentColour.withAlpha (dragging ? 0.9f : 0.42f));
-    g.drawRoundedRectangle (bounds, 4.0f, dragging ? 2.0f : 1.0f);
+    const float normalised = parameterId != nullptr && parameterFor (audioProcessor, parameterId) != nullptr
+        ? parameterFor (audioProcessor, parameterId)->getValue()
+        : 0.0f;
+
+    const bool knobMode = bounds.getHeight() >= 58.0f;
+    if (knobMode)
+    {
+        drawGlassPanel (g, bounds, boxColour, accentColour, 8.0f, true);
+
+        auto labelArea = getLocalBounds().reduced (5, 3).removeFromTop (16);
+        g.setFont (withHeight (fonts.label, 12.0f));
+        g.setColour (accentColour);
+        g.drawFittedText (label, labelArea, juce::Justification::centred, 1);
+
+        const float knobSize = juce::jmin (bounds.getWidth() * 0.68f, bounds.getHeight() - 42.0f);
+        const auto knobArea = juce::Rectangle<float> (knobSize, knobSize)
+            .withCentre ({ bounds.getCentreX(), bounds.getY() + 20.0f + knobSize * 0.5f });
+        drawGlassKnob (g, knobArea, accentColour, normalised, dragging);
+
+        auto valueArea = bounds.withTop (knobArea.getBottom() + 1.0f).reduced (4.0f, 0.0f).toNearestInt();
+        g.setFont (withHeight (fonts.label, 12.5f));
+        g.setColour (textColour);
+        const auto value = unit.isNotEmpty() ? displayValue() + " " + unit : displayValue();
+        g.drawFittedText (value, valueArea, juce::Justification::centred, 1);
+        return;
+    }
+
+    drawGlassPanel (g, bounds, boxColour, accentColour, 4.0f, false);
 
     auto area = getLocalBounds().reduced (8, 2);
     auto nameArea = area.removeFromLeft (juce::roundToInt (area.getWidth() * 0.33f));
@@ -442,9 +466,6 @@ void RackValueBox::paint (juce::Graphics& g)
     g.setColour (textColour);
     g.drawFittedText (displayValue(), area, juce::Justification::centred, 1);
 
-    const float normalised = parameterId != nullptr && parameterFor (audioProcessor, parameterId) != nullptr
-        ? parameterFor (audioProcessor, parameterId)->getValue()
-        : 0.0f;
     g.setColour (accentColour);
     g.fillRect (bounds.withY (bounds.getBottom() - 4.0f).withHeight (3.0f).withWidth (bounds.getWidth() * normalised));
 }
@@ -575,10 +596,12 @@ void MsegSlotStrip::paintSlot (juce::Graphics& g, juce::Rectangle<float> bounds,
 {
     const bool active = slot == activeSlot;
     auto tab = bounds.reduced (1.0f, active ? 0.0f : 3.0f);
-    g.setColour (active ? juce::Colour (0xff117c7a) : boxColour);
-    g.fillRoundedRectangle (tab, 5.0f);
-    g.setColour ((active ? cyanAccent : juce::Colour (0xff2db6b2)).withAlpha (active ? 0.95f : 0.38f));
-    g.drawRoundedRectangle (tab.reduced (0.5f), 5.0f, active ? 2.0f : 1.0f);
+    drawGlassPanel (g,
+                    tab,
+                    active ? juce::Colour (0xff117c7a) : boxColour,
+                    active ? cyanAccent : juce::Colour (0xff2db6b2),
+                    5.0f,
+                    active);
 
     g.setFont (withHeight (fonts.label, 12.0f));
     g.setColour (textColour);
@@ -629,10 +652,7 @@ void MsegCurveEditor::setPoints (std::vector<MsegPoint> newPoints)
 void MsegCurveEditor::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xff061f21));
-    g.fillRoundedRectangle (bounds, 5.0f);
-    g.setColour (cyanAccent.withAlpha (0.42f));
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 5.0f, 1.0f);
+    drawGlassPanel (g, bounds, juce::Colour (0xff061f21), cyanAccent, 5.0f, false);
 
     const auto graph = graphBounds();
     g.setColour (juce::Colour (0xff123235));
@@ -874,40 +894,33 @@ void MacroOscAudioProcessorEditor::paint (juce::Graphics& g)
     g.fillAll (backgroundColour);
 
     auto area = getLocalBounds().toFloat().reduced (8.0f);
-    g.setColour (rackPanelColour.withAlpha (0.38f));
-    g.fillRoundedRectangle (area, 8.0f);
-    g.setColour (cyanAccent.withAlpha (0.32f));
-    g.drawRoundedRectangle (area, 8.0f, 1.2f);
+    drawGlassPanel (g, area, rackPanelColour.withAlpha (0.70f), cyanAccent, 8.0f, false);
 
     auto content = getLocalBounds().reduced (14);
     const int deviceHeight = juce::roundToInt (static_cast<float> (content.getWidth()) / 3.0f);
     content.removeFromTop (deviceHeight);
-    content.removeFromTop (6);
-    auto pitchRow = content.removeFromTop (38);
-    content.removeFromTop (4);
-    auto envRow = content.removeFromTop (38);
-    content.removeFromTop (10);
+    content.removeFromTop (8);
+    auto controlsArea = content.removeFromLeft (kBottomControlBankWidth);
+    content.removeFromLeft (kBottomColumnGap);
     auto msegArea = content;
 
-    const auto paintRowTitle = [&] (juce::Rectangle<int> row, const juce::String& title, juce::Colour accent)
+    drawGlassPanel (g, controlsArea.toFloat(), rowColour.darker (0.12f), cyanAccent, 8.0f, true);
+    drawGlassPanel (g, msegArea.toFloat(), juce::Colour (0xff042829), cyanAccent, 7.0f, true);
+
+    auto controlsInner = controlsArea.reduced (10, 8);
+    const auto paintGroupTitle = [&] (juce::Rectangle<int> titleArea, const juce::String& title, juce::Colour accent)
     {
-        g.setColour (rowColour);
-        g.fillRoundedRectangle (row.toFloat(), 6.0f);
-        auto titleArea = row.removeFromLeft (128);
-        g.setColour (accent.withAlpha (0.16f));
-        g.fillRoundedRectangle (titleArea.toFloat().reduced (2.0f), 5.0f);
-        g.setFont (withHeight (fonts.title, 23.0f));
+        g.setColour (accent.withAlpha (0.18f));
+        g.fillRoundedRectangle (titleArea.toFloat().reduced (1.0f), 4.0f);
+        g.setFont (withHeight (fonts.title, 14.0f));
         g.setColour (textColour);
-        g.drawFittedText (title, titleArea, juce::Justification::centred, 1);
+        g.drawFittedText (title, titleArea.reduced (6, 0), juce::Justification::centredLeft, 1);
     };
 
-    paintRowTitle (pitchRow, "Pitch", yellowAccent);
-    paintRowTitle (envRow, "Env.", cyanAccent);
-
-    g.setColour (juce::Colour (0xff042829));
-    g.fillRoundedRectangle (msegArea.toFloat(), 7.0f);
-    g.setColour (cyanAccent.withAlpha (0.22f));
-    g.drawRoundedRectangle (msegArea.toFloat().reduced (0.5f), 7.0f, 1.0f);
+    paintGroupTitle (controlsInner.removeFromTop (22), "PITCH", yellowAccent);
+    controlsInner.removeFromTop (92);
+    controlsInner.removeFromTop (8);
+    paintGroupTitle (controlsInner.removeFromTop (22), "ENV.", cyanAccent);
 }
 
 void MacroOscAudioProcessorEditor::resized()
@@ -916,40 +929,50 @@ void MacroOscAudioProcessorEditor::resized()
 
     const int deviceHeight = juce::roundToInt (static_cast<float> (area.getWidth()) / 3.0f);
     devicePanel.setBounds (area.removeFromTop (deviceHeight));
-    area.removeFromTop (6);
+    area.removeFromTop (8);
 
-    auto pitchRow = area.removeFromTop (38).reduced (0, 4);
-    pitchRow.removeFromLeft (138);
-    const int pitchBoxWidth = pitchRow.getWidth() / 3;
-    pitchBox.setBounds (pitchRow.removeFromLeft (pitchBoxWidth).reduced (4, 0));
-    detuneBox.setBounds (pitchRow.removeFromLeft (pitchBoxWidth).reduced (4, 0));
-    portaBox.setBounds (pitchRow.reduced (4, 0));
+    auto bottomArea = area;
+    auto controlsArea = bottomArea.removeFromLeft (kBottomControlBankWidth);
+    bottomArea.removeFromLeft (kBottomColumnGap);
+    auto msegArea = bottomArea;
 
-    area.removeFromTop (4);
-    auto envRow = area.removeFromTop (38).reduced (0, 4);
-    envRow.removeFromLeft (138);
-    const int envBoxWidth = envRow.getWidth() / 4;
-    attackBox.setBounds (envRow.removeFromLeft (envBoxWidth).reduced (4, 0));
-    decayBox.setBounds (envRow.removeFromLeft (envBoxWidth).reduced (4, 0));
-    sustainBox.setBounds (envRow.removeFromLeft (envBoxWidth).reduced (4, 0));
-    releaseBox.setBounds (envRow.reduced (4, 0));
+    auto controlsInner = controlsArea.reduced (10, 8);
+    controlsInner.removeFromTop (22);
+    auto pitchRow = controlsInner.removeFromTop (92);
+    const auto layoutKnobRow = [] (juce::Rectangle<int> row, const auto& boxes)
+    {
+        constexpr int gap = 6;
+        const int count = static_cast<int> (boxes.size());
+        const int cellWidth = (row.getWidth() - gap * (count - 1)) / count;
+        for (auto* box : boxes)
+        {
+            box->setBounds (row.removeFromLeft (cellWidth));
+            row.removeFromLeft (gap);
+        }
+    };
 
-    area.removeFromTop (10);
-    area.reduce (8, 8);
-    auto tabRow = area.removeFromTop (44);
+    layoutKnobRow (pitchRow, std::array<RackValueBox*, 3> { &pitchBox, &detuneBox, &portaBox });
+
+    controlsInner.removeFromTop (8);
+    controlsInner.removeFromTop (22);
+    auto envRow = controlsInner.removeFromTop (92);
+    layoutKnobRow (envRow, std::array<RackValueBox*, 4> { &attackBox, &decayBox, &sustainBox, &releaseBox });
+
+    msegArea.reduce (8, 8);
+    auto tabRow = msegArea.removeFromTop (44);
     msegSlots.setBounds (tabRow);
 
-    area.removeFromTop (6);
-    auto controls = area.removeFromTop (36);
-    destinationBox.setBounds (controls.removeFromLeft (154).reduced (4, 3));
-    loopButton.setBounds (controls.removeFromLeft (78).reduced (4, 4));
+    msegArea.removeFromTop (6);
+    auto controls = msegArea.removeFromTop (38);
+    destinationBox.setBounds (controls.removeFromLeft (132).reduced (4, 3));
+    loopButton.setBounds (controls.removeFromLeft (68).reduced (4, 4));
     const int smallWidth = controls.getWidth() / 3;
-    msegAmountBox.setBounds (controls.removeFromLeft (smallWidth).reduced (4, 0));
-    msegOffsetBox.setBounds (controls.removeFromLeft (smallWidth).reduced (4, 0));
-    msegRateBox.setBounds (controls.reduced (4, 0));
+    msegAmountBox.setBounds (controls.removeFromLeft (smallWidth).reduced (4, 1));
+    msegOffsetBox.setBounds (controls.removeFromLeft (smallWidth).reduced (4, 1));
+    msegRateBox.setBounds (controls.reduced (4, 1));
 
-    area.removeFromTop (8);
-    msegEditor.setBounds (area);
+    msegArea.removeFromTop (8);
+    msegEditor.setBounds (msegArea);
 }
 
 void MacroOscAudioProcessorEditor::changeListenerCallback (juce::ChangeBroadcaster*)
