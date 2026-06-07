@@ -4,6 +4,7 @@
 #include "DSP/Mseg.h"
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -42,6 +43,9 @@ static constexpr std::array<const char*, kMsegSlotCount> msegRate {
 };
 static constexpr std::array<const char*, kMsegSlotCount> msegLoop {
     "mseg1Loop", "mseg2Loop", "mseg3Loop"
+};
+static constexpr std::array<const char*, kMsegSlotCount> msegSync {
+    "mseg1Sync", "mseg2Sync", "mseg3Sync"
 };
 } // namespace ParamIDs
 
@@ -89,12 +93,46 @@ public:
     static APVTS::ParameterLayout createParameterLayout();
 
 private:
+    static constexpr int maxPolyphony = 8;
+
+    struct RawParameterPointers
+    {
+        std::atomic<float>* model {};
+        std::atomic<float>* timbre {};
+        std::atomic<float>* color {};
+        std::atomic<float>* modulation {};
+        std::atomic<float>* fmAmount {};
+        std::atomic<float>* fmRatio {};
+        std::atomic<float>* level {};
+        std::atomic<float>* coarse {};
+        std::atomic<float>* fine {};
+        std::atomic<float>* portamento {};
+        std::atomic<float>* attack {};
+        std::atomic<float>* decay {};
+        std::atomic<float>* sustain {};
+        std::atomic<float>* release {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegDestination {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegAmount {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegOffset {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegRate {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegLoop {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegSync {};
+    };
+
     juce::Synthesiser synth;
     APVTS parameters;
+    RawParameterPointers rawParameters;
+    std::array<BraidsVoice*, maxPolyphony> braidsVoices {};
     std::array<std::shared_ptr<const MsegShape>, kMsegSlotCount> currentMsegShapes;
+    std::array<std::atomic<const MsegShape*>, kMsegSlotCount> currentAudioMsegShapes {};
+    std::vector<std::shared_ptr<const MsegShape>> retainedMsegShapes;
+    std::atomic<float> currentTempoBpm { 120.0f };
 
+    void cacheRawParameterPointers();
+    void updateHostTempo() noexcept;
+    [[nodiscard]] const MsegShape* getAudioMsegShape (int slotIndex) const noexcept;
     [[nodiscard]] BraidsVoiceParameters buildVoiceParameters() const;
-    [[nodiscard]] float getFloatParameter (const char* id) const noexcept;
+    [[nodiscard]] static float getFloatParameter (const std::atomic<float>* value) noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MacroOscAudioProcessor)
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -10,6 +11,73 @@
 namespace macro_osc
 {
 inline constexpr int kMsegSlotCount = 3;
+
+struct MsegSyncedDuration
+{
+    float beats {};
+    const char* label {};
+};
+
+inline constexpr std::array<MsegSyncedDuration, 21> kMsegSyncedDurations {{
+    { 1.0f / 16.0f, "1/64" },
+    { 1.0f / 12.0f, "1/32T" },
+    { 1.0f / 8.0f, "1/32" },
+    { 1.0f / 6.0f, "1/16T" },
+    { 3.0f / 16.0f, "1/32D" },
+    { 1.0f / 4.0f, "1/16" },
+    { 1.0f / 3.0f, "1/8T" },
+    { 3.0f / 8.0f, "1/16D" },
+    { 1.0f / 2.0f, "1/8" },
+    { 2.0f / 3.0f, "1/4T" },
+    { 3.0f / 4.0f, "1/8D" },
+    { 1.0f, "1/4" },
+    { 4.0f / 3.0f, "1/2T" },
+    { 3.0f / 2.0f, "1/4D" },
+    { 2.0f, "1/2" },
+    { 3.0f, "1/2D" },
+    { 4.0f, "1 bar" },
+    { 6.0f, "1 bar D" },
+    { 8.0f, "2 bars" },
+    { 12.0f, "2 bars D" },
+    { 16.0f, "4 bars" }
+}};
+
+[[nodiscard]] inline const MsegSyncedDuration& nearestMsegSyncedDuration (float beats) noexcept
+{
+    const auto clampedBeats = juce::jlimit (kMsegSyncedDurations.front().beats,
+                                           kMsegSyncedDurations.back().beats,
+                                           beats);
+    const MsegSyncedDuration* nearest = &kMsegSyncedDurations.front();
+    float nearestDistance = std::abs (clampedBeats - nearest->beats);
+
+    for (const auto& duration : kMsegSyncedDurations)
+    {
+        const float distance = std::abs (clampedBeats - duration.beats);
+        if (distance < nearestDistance)
+        {
+            nearest = &duration;
+            nearestDistance = distance;
+        }
+    }
+
+    return *nearest;
+}
+
+[[nodiscard]] inline float snapMsegSyncedBeats (float beats) noexcept
+{
+    return nearestMsegSyncedDuration (beats).beats;
+}
+
+[[nodiscard]] inline juce::String msegSyncedDurationLabel (float beats)
+{
+    return nearestMsegSyncedDuration (beats).label;
+}
+
+[[nodiscard]] inline float msegSyncedBeatsToSeconds (float beats, float bpm) noexcept
+{
+    const float safeBpm = juce::jlimit (20.0f, 300.0f, bpm);
+    return juce::jlimit (0.01f, 64.0f, snapMsegSyncedBeats (beats) * 60.0f / safeBpm);
+}
 
 struct MsegPoint
 {
@@ -71,7 +139,7 @@ struct MsegShape
             point.y = juce::jlimit (0.0f, 1.0f, point.y);
         }
 
-        std::sort (input.begin(), input.end(), [] (const auto& a, const auto& b)
+        std::stable_sort (input.begin(), input.end(), [] (const auto& a, const auto& b)
         {
             return a.x < b.x;
         });
@@ -85,7 +153,9 @@ struct MsegShape
             if (point.x <= 0.0001f || point.x >= 0.9999f)
                 continue;
 
-            if (! result.empty() && std::abs (point.x - result.back().x) < 0.0025f)
+            if (! result.empty()
+                && std::abs (point.x - result.back().x) < 0.000001f
+                && std::abs (point.y - result.back().y) < 0.000001f)
                 result.back() = point;
             else if (result.size() < 31)
                 result.push_back (point);

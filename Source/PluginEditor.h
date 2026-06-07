@@ -2,6 +2,7 @@
 
 #include "PluginProcessor.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -126,6 +127,8 @@ public:
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
@@ -143,8 +146,10 @@ private:
     std::vector<MsegPoint> points;
     int activeSlot {};
     int selectedIndex { -1 };
+    int hoveredIndex { -1 };
     bool editing {};
     DragMode dragMode { DragMode::none };
+    DragMode hoveredSlider { DragMode::none };
 
     [[nodiscard]] juce::Rectangle<float> graphBounds() const;
     [[nodiscard]] juce::Rectangle<float> offsetSliderBounds() const;
@@ -154,10 +159,15 @@ private:
     [[nodiscard]] juce::Rectangle<float> scaleLabelBounds() const;
     [[nodiscard]] juce::Point<float> pointToScreen (const MsegPoint& point) const;
     [[nodiscard]] MsegPoint screenToPoint (juce::Point<float> position) const;
+    [[nodiscard]] MsegPoint pointWithScaleAndOffset (const MsegPoint& point) const;
     [[nodiscard]] int findNearestPoint (juce::Point<float> position) const;
+    [[nodiscard]] juce::Rectangle<float> sliderHandleBounds (DragMode mode) const;
+    [[nodiscard]] DragMode sliderHandleAtPosition (juce::Point<float> position) const;
     [[nodiscard]] DragMode sliderAtPosition (juce::Point<float> position) const;
     [[nodiscard]] const char* parameterForDragMode (DragMode mode) const;
     [[nodiscard]] float normalisedParameterValue (const char* parameterId) const;
+    [[nodiscard]] float sliderDisplayNormalised (DragMode mode) const;
+    void updateHoverTarget (juce::Point<float> position);
     void setSliderFromPosition (DragMode mode, juce::Point<float> position);
     void beginParameterGesture (DragMode mode);
     void endParameterGesture (DragMode mode);
@@ -168,7 +178,7 @@ private:
 class MacroOscAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                            private juce::ChangeListener,
                                            private juce::AudioProcessorValueTreeState::Listener,
-                                           private juce::AsyncUpdater
+                                           private juce::Timer
 {
 public:
     explicit MacroOscAudioProcessorEditor (MacroOscAudioProcessor&);
@@ -195,13 +205,16 @@ private:
     MsegCurveEditor msegEditor;
     juce::ComboBox destinationBox;
     juce::ToggleButton loopButton;
+    juce::ToggleButton syncButton;
     std::unique_ptr<ComboBoxAttachment> destinationAttachment;
     std::unique_ptr<ButtonAttachment> loopAttachment;
+    std::unique_ptr<ButtonAttachment> syncAttachment;
+    std::atomic_bool parameterUiDirty { false };
     int activeMsegSlot {};
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void parameterChanged (const juce::String& parameterID, float newValue) override;
-    void handleAsyncUpdate() override;
+    void timerCallback() override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
     void setActiveMsegSlot (int slot);
     void configureMsegAttachments();

@@ -1,18 +1,16 @@
 # Macro OSC
 
-Macro OSC is a compact software synthesizer built around the Mutable Instruments Braids macro oscillator engine. It brings Braids-style oscillator models into a focused JUCE instrument with direct pitch, timbre, color, modulation, FM, envelope, and multi-stage modulation controls.
-
-The plugin is designed as a hands-on sound design instrument: choose an oscillator model, shape its core tone from the main panel, then use the MSEG modulators to add evolving movement without leaving the device.
+Macro OSC is a compact software synthesizer built around the Mutable Instruments Braids macro oscillator engine. It brings Braids-style oscillator models into a focused JUCE instrument with direct pitch, timbre, color, modulation, FM, envelope, and multi-stage modulation controls. Choose an oscillator model, shape its core tone from the main panel, then use the MSEG modulators to add movement.
 
 ![Macro OSC user interface](ui.png)
 
 ## Highlights
 
-- Braids-derived macro oscillator DSP with a broad range of digital oscillator models.
+- Braids macro oscillator DSP with a broad range of digital oscillator models.
 - VST3 plugin and standalone app targets.
-- Rack-style interface with draggable value displays for fast editing.
+- Rack-style interface with draggable value displays.
 - Direct control over model, timbre, color, modulation amount, FM amount, pitch, detune, glide, and ADSR envelope shape.
-- Three editable MSEG slots for reusable movement and rhythmic modulation.
+- Three editable MSEG slots for reusable movement/rhythmic modulation.
 - MSEG destinations for model, timbre, color, modulation, and FM.
 - Loopable MSEG shapes with amount, offset, rate, and curve editing.
 

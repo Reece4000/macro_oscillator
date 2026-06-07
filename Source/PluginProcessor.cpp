@@ -7,8 +7,6 @@ namespace macro_osc
 {
 namespace
 {
-constexpr int kMaxPolyphony = 8;
-
 juce::NormalisableRange<float> skewedRange (float start, float end, float interval, float skew)
 {
     return { start, end, interval, skew };
@@ -41,9 +39,15 @@ MacroOscAudioProcessor::MacroOscAudioProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       parameters (*this, nullptr, "MacroOscState", createParameterLayout())
 {
+    retainedMsegShapes.reserve (128);
+    cacheRawParameterPointers();
+
     synth.addSound (new BraidsSound());
-    for (int i = 0; i < kMaxPolyphony; ++i)
-        synth.addVoice (new BraidsVoice());
+    for (auto& voice : braidsVoices)
+    {
+        voice = new BraidsVoice();
+        synth.addVoice (voice);
+    }
     synth.setNoteStealingEnabled (true);
 
     for (int slot = 0; slot < kMsegSlotCount; ++slot)
@@ -53,11 +57,8 @@ MacroOscAudioProcessor::MacroOscAudioProcessor()
 void MacroOscAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     synth.setCurrentPlaybackSampleRate (sampleRate);
-    for (int i = 0; i < synth.getNumVoices(); ++i)
-    {
-        if (auto* voice = dynamic_cast<BraidsVoice*> (synth.getVoice (i)))
-            voice->prepare (sampleRate);
-    }
+    for (auto* voice : braidsVoices)
+        voice->prepare (sampleRate);
 }
 
 void MacroOscAudioProcessor::releaseResources()
@@ -76,12 +77,10 @@ void MacroOscAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
+    updateHostTempo();
     const auto voiceParameters = buildVoiceParameters();
-    for (int i = 0; i < synth.getNumVoices(); ++i)
-    {
-        if (auto* voice = dynamic_cast<BraidsVoice*> (synth.getVoice (i)))
-            voice->setParameters (voiceParameters);
-    }
+    for (auto* voice : braidsVoices)
+        voice->setParameters (voiceParameters);
 
     synth.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
 }
@@ -140,6 +139,57 @@ std::shared_ptr<const MsegShape> MacroOscAudioProcessor::getMsegShape (int slotI
     return std::atomic_load_explicit (&currentMsegShapes[static_cast<size_t> (clampedSlot)], std::memory_order_acquire);
 }
 
+const MsegShape* MacroOscAudioProcessor::getAudioMsegShape (int slotIndex) const noexcept
+{
+    const int clampedSlot = juce::jlimit (0, kMsegSlotCount - 1, slotIndex);
+    return currentAudioMsegShapes[static_cast<size_t> (clampedSlot)].load (std::memory_order_acquire);
+}
+
+void MacroOscAudioProcessor::cacheRawParameterPointers()
+{
+    rawParameters.model = parameters.getRawParameterValue (ParamIDs::model);
+    rawParameters.timbre = parameters.getRawParameterValue (ParamIDs::timbre);
+    rawParameters.color = parameters.getRawParameterValue (ParamIDs::color);
+    rawParameters.modulation = parameters.getRawParameterValue (ParamIDs::modulation);
+    rawParameters.fmAmount = parameters.getRawParameterValue (ParamIDs::fmAmount);
+    rawParameters.fmRatio = parameters.getRawParameterValue (ParamIDs::fmRatio);
+    rawParameters.level = parameters.getRawParameterValue (ParamIDs::level);
+    rawParameters.coarse = parameters.getRawParameterValue (ParamIDs::coarse);
+    rawParameters.fine = parameters.getRawParameterValue (ParamIDs::fine);
+    rawParameters.portamento = parameters.getRawParameterValue (ParamIDs::portamento);
+    rawParameters.attack = parameters.getRawParameterValue (ParamIDs::attack);
+    rawParameters.decay = parameters.getRawParameterValue (ParamIDs::decay);
+    rawParameters.sustain = parameters.getRawParameterValue (ParamIDs::sustain);
+    rawParameters.release = parameters.getRawParameterValue (ParamIDs::release);
+
+    for (int slot = 0; slot < kMsegSlotCount; ++slot)
+    {
+        const auto index = static_cast<size_t> (slot);
+        rawParameters.msegDestination[index] = parameters.getRawParameterValue (ParamIDs::msegDestination[index]);
+        rawParameters.msegAmount[index] = parameters.getRawParameterValue (ParamIDs::msegAmount[index]);
+        rawParameters.msegOffset[index] = parameters.getRawParameterValue (ParamIDs::msegOffset[index]);
+        rawParameters.msegRate[index] = parameters.getRawParameterValue (ParamIDs::msegRate[index]);
+        rawParameters.msegLoop[index] = parameters.getRawParameterValue (ParamIDs::msegLoop[index]);
+        rawParameters.msegSync[index] = parameters.getRawParameterValue (ParamIDs::msegSync[index]);
+    }
+}
+
+void MacroOscAudioProcessor::updateHostTempo() noexcept
+{
+    if (auto* playHead = getPlayHead())
+    {
+        if (const auto position = playHead->getPosition())
+        {
+            if (const auto bpm = position->getBpm())
+            {
+                const float tempo = static_cast<float> (*bpm);
+                if (std::isfinite (tempo) && tempo > 0.0f)
+                    currentTempoBpm.store (juce::jlimit (20.0f, 300.0f, tempo), std::memory_order_relaxed);
+            }
+        }
+    }
+}
+
 void MacroOscAudioProcessor::setMsegPoints (int slotIndex, std::vector<MsegPoint> points, bool notifyEditor)
 {
     const int clampedSlot = juce::jlimit (0, kMsegSlotCount - 1, slotIndex);
@@ -148,9 +198,12 @@ void MacroOscAudioProcessor::setMsegPoints (int slotIndex, std::vector<MsegPoint
     if (notifyEditor)
         parameters.state.setProperty (msegPointsPropertyName (clampedSlot), MsegShape::serialise (shape->points), nullptr);
 
+    auto publishedShape = std::static_pointer_cast<const MsegShape> (shape);
+    retainedMsegShapes.push_back (publishedShape);
     std::atomic_store_explicit (&currentMsegShapes[static_cast<size_t> (clampedSlot)],
-                                std::static_pointer_cast<const MsegShape> (shape),
+                                publishedShape,
                                 std::memory_order_release);
+    currentAudioMsegShapes[static_cast<size_t> (clampedSlot)].store (publishedShape.get(), std::memory_order_release);
     if (notifyEditor)
         sendChangeMessage();
 }
@@ -216,6 +269,10 @@ MacroOscAudioProcessor::APVTS::ParameterLayout MacroOscAudioProcessor::createPar
             juce::ParameterID { ParamIDs::msegLoop[static_cast<size_t> (slot)], 1 },
             "MSEG " + juce::String (slot + 1) + " Loop",
             true));
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::msegSync[static_cast<size_t> (slot)], 1 },
+            "MSEG " + juce::String (slot + 1) + " Sync",
+            false));
     }
 
     return layout;
@@ -224,38 +281,43 @@ MacroOscAudioProcessor::APVTS::ParameterLayout MacroOscAudioProcessor::createPar
 BraidsVoiceParameters MacroOscAudioProcessor::buildVoiceParameters() const
 {
     BraidsVoiceParameters result;
-    result.model = juce::roundToInt (getFloatParameter (ParamIDs::model));
-    result.timbre = getFloatParameter (ParamIDs::timbre);
-    result.color = getFloatParameter (ParamIDs::color);
-    result.modulation = getFloatParameter (ParamIDs::modulation);
-    result.fmAmount = getFloatParameter (ParamIDs::fmAmount);
-    result.fmRatio = getFloatParameter (ParamIDs::fmRatio);
-    result.level = getFloatParameter (ParamIDs::level);
-    result.coarseSemitones = getFloatParameter (ParamIDs::coarse);
-    result.fineSemitones = getFloatParameter (ParamIDs::fine);
-    result.portamentoSeconds = getFloatParameter (ParamIDs::portamento);
-    result.attackSeconds = getFloatParameter (ParamIDs::attack);
-    result.decaySeconds = getFloatParameter (ParamIDs::decay);
-    result.sustainLevel = getFloatParameter (ParamIDs::sustain);
-    result.releaseSeconds = getFloatParameter (ParamIDs::release);
+    result.model = juce::roundToInt (getFloatParameter (rawParameters.model));
+    result.timbre = getFloatParameter (rawParameters.timbre);
+    result.color = getFloatParameter (rawParameters.color);
+    result.modulation = getFloatParameter (rawParameters.modulation);
+    result.fmAmount = getFloatParameter (rawParameters.fmAmount);
+    result.fmRatio = getFloatParameter (rawParameters.fmRatio);
+    result.level = getFloatParameter (rawParameters.level);
+    result.coarseSemitones = getFloatParameter (rawParameters.coarse);
+    result.fineSemitones = getFloatParameter (rawParameters.fine);
+    result.portamentoSeconds = getFloatParameter (rawParameters.portamento);
+    result.attackSeconds = getFloatParameter (rawParameters.attack);
+    result.decaySeconds = getFloatParameter (rawParameters.decay);
+    result.sustainLevel = getFloatParameter (rawParameters.sustain);
+    result.releaseSeconds = getFloatParameter (rawParameters.release);
 
     for (int slot = 0; slot < kMsegSlotCount; ++slot)
     {
+        const auto index = static_cast<size_t> (slot);
         auto& target = result.msegSlots[static_cast<size_t> (slot)];
-        target.destination = juce::roundToInt (getFloatParameter (ParamIDs::msegDestination[static_cast<size_t> (slot)]));
-        target.amountPercent = getFloatParameter (ParamIDs::msegAmount[static_cast<size_t> (slot)]);
-        target.offsetPercent = getFloatParameter (ParamIDs::msegOffset[static_cast<size_t> (slot)]);
-        target.rateSeconds = getFloatParameter (ParamIDs::msegRate[static_cast<size_t> (slot)]);
-        target.loop = getFloatParameter (ParamIDs::msegLoop[static_cast<size_t> (slot)]) >= 0.5f;
-        target.shape = getMsegShape (slot);
+        target.destination = juce::roundToInt (getFloatParameter (rawParameters.msegDestination[index]));
+        target.amountPercent = getFloatParameter (rawParameters.msegAmount[index]);
+        target.offsetPercent = getFloatParameter (rawParameters.msegOffset[index]);
+        const float rateValue = getFloatParameter (rawParameters.msegRate[index]);
+        const bool syncDuration = getFloatParameter (rawParameters.msegSync[index]) >= 0.5f;
+        target.rateSeconds = syncDuration
+            ? msegSyncedBeatsToSeconds (rateValue, currentTempoBpm.load (std::memory_order_relaxed))
+            : rateValue;
+        target.loop = getFloatParameter (rawParameters.msegLoop[index]) >= 0.5f;
+        target.shape = getAudioMsegShape (slot);
     }
 
     return result;
 }
 
-float MacroOscAudioProcessor::getFloatParameter (const char* id) const noexcept
+float MacroOscAudioProcessor::getFloatParameter (const std::atomic<float>* value) noexcept
 {
-    if (const auto* value = parameters.getRawParameterValue (id))
+    if (value != nullptr)
         return value->load (std::memory_order_relaxed);
 
     return 0.0f;

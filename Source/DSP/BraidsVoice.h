@@ -4,7 +4,6 @@
 #include "braids/macro_oscillator.h"
 
 #include <array>
-#include <memory>
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -34,7 +33,7 @@ struct BraidsVoiceParameters
         float offsetPercent {};
         float rateSeconds { 1.0f };
         bool loop { true };
-        std::shared_ptr<const MsegShape> shape;
+        const MsegShape* shape {};
     };
 
     std::array<MsegSlot, kMsegSlotCount> msegSlots;
@@ -77,6 +76,7 @@ private:
     static constexpr int kRenderBlockSize = 24;
     static constexpr double kBraidsNativeSampleRate = 96000.0;
     static constexpr float kPitchBendRangeSemitones = 2.0f;
+    using LinearSmoother = juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>;
 
     enum class EnvelopeStage : std::uint8_t
     {
@@ -87,8 +87,58 @@ private:
         release
     };
 
+    struct SmoothedParameterSnapshot
+    {
+        float modulation { 0.0f };
+        float fmAmount { 0.0f };
+        float fmRatio { 1.0f };
+        float level { 0.8f };
+        float coarseSemitones {};
+        float fineSemitones {};
+        float portamentoSeconds {};
+        float attackSeconds { 0.005f };
+        float decaySeconds { 0.25f };
+        float sustainLevel { 0.8f };
+        float releaseSeconds { 0.25f };
+
+        struct MsegSlot
+        {
+            float amountPercent { 50.0f };
+            float offsetPercent {};
+            float rateSeconds { 1.0f };
+        };
+
+        std::array<MsegSlot, kMsegSlotCount> msegSlots;
+    };
+
+    struct ParameterSmoothers
+    {
+        LinearSmoother modulation;
+        LinearSmoother fmAmount;
+        LinearSmoother fmRatio;
+        LinearSmoother level;
+        LinearSmoother coarseSemitones;
+        LinearSmoother fineSemitones;
+        LinearSmoother portamentoSeconds;
+        LinearSmoother attackSeconds;
+        LinearSmoother decaySeconds;
+        LinearSmoother sustainLevel;
+        LinearSmoother releaseSeconds;
+
+        struct MsegSlot
+        {
+            LinearSmoother amountPercent;
+            LinearSmoother offsetPercent;
+            LinearSmoother rateSeconds;
+        };
+
+        std::array<MsegSlot, kMsegSlotCount> msegSlots;
+    };
+
     braids::MacroOscillator oscillator;
     BraidsVoiceParameters parameters;
+    ParameterSmoothers parameterSmoothers;
+    SmoothedParameterSnapshot smoothedParameters;
     EnvelopeStage envelopeStage { EnvelopeStage::idle };
     float envelopeValue {};
     float releaseStartValue {};
@@ -110,6 +160,9 @@ private:
     bool carryValid {};
     bool hasPreviousTargetPitch {};
 
+    void resetParameterSmoothers();
+    void setParameterSmootherTargets() noexcept;
+    void advanceSmoothedParameters (int numSamples) noexcept;
     [[nodiscard]] float nextEnvelopeSample() noexcept;
     [[nodiscard]] bool envelopeActive() const noexcept;
     void renderOscillatorChunk (int numSamples, float pitchOffsetSemitones, float timbre, float color);
