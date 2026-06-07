@@ -127,9 +127,14 @@ private:
     std::array<std::atomic<const MsegShape*>, kMsegSlotCount> currentAudioMsegShapes {};
     std::vector<std::shared_ptr<const MsegShape>> retainedMsegShapes;
     std::atomic<float> currentTempoBpm { 120.0f };
+    std::array<float, 2> dcBlockerPreviousInput {};
+    std::array<float, 2> dcBlockerPreviousOutput {};
+    float dcBlockerCoefficient { 0.995f };
 
     void cacheRawParameterPointers();
     void updateHostTempo() noexcept;
+    void resetOutputDcBlocker() noexcept;
+    void applyOutputDcBlocker (juce::AudioBuffer<float>& buffer) noexcept;
     [[nodiscard]] const MsegShape* getAudioMsegShape (int slotIndex) const noexcept;
     [[nodiscard]] BraidsVoiceParameters buildVoiceParameters() const;
     [[nodiscard]] static float getFloatParameter (const std::atomic<float>* value) noexcept;

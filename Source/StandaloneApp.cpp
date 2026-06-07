@@ -4,6 +4,75 @@
 
 namespace macro_osc
 {
+namespace
+{
+void hideBluetoothMidiControls (juce::Component& component)
+{
+    for (int i = 0; i < component.getNumChildComponents(); ++i)
+    {
+        if (auto* child = component.getChildComponent (i))
+        {
+            if (auto* button = dynamic_cast<juce::Button*> (child))
+            {
+                if (button->getButtonText().containsIgnoreCase ("Bluetooth MIDI"))
+                {
+                    button->setVisible (false);
+                    button->setEnabled (false);
+                    button->setBounds ({});
+                }
+            }
+
+            hideBluetoothMidiControls (*child);
+        }
+    }
+}
+
+class SafeAudioSettingsComponent final : public juce::Component,
+                                         private juce::Timer
+{
+public:
+    explicit SafeAudioSettingsComponent (juce::AudioDeviceManager& deviceManager)
+        : selector (deviceManager, 0, 0, 0, 2, true, false, true, false)
+    {
+        setOpaque (true);
+        addAndMakeVisible (selector);
+        setSize (500, 520);
+        startTimerHz (4);
+        hideBluetoothMidiControls (selector);
+    }
+
+    ~SafeAudioSettingsComponent() override
+    {
+        stopTimer();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+    }
+
+    void resized() override
+    {
+        selector.setBounds (getLocalBounds().reduced (10));
+        hideBluetoothMidiControls (selector);
+    }
+
+    void childBoundsChanged (juce::Component* child) override
+    {
+        if (child == &selector)
+            setSize (getWidth(), selector.getHeight() + 20);
+    }
+
+private:
+    void timerCallback() override
+    {
+        hideBluetoothMidiControls (selector);
+    }
+
+    juce::AudioDeviceSelectorComponent selector;
+};
+} // namespace
+
 class NativeTitlebarStandaloneWindow final : public juce::StandaloneFilterWindow
 {
 public:
@@ -22,7 +91,32 @@ public:
         hideCustomTitlebarOptionsButton();
     }
 
+    void handleMenuResult (int result)
+    {
+        if (result == 1)
+        {
+            showSafeAudioSettingsDialog();
+            return;
+        }
+
+        juce::StandaloneFilterWindow::handleMenuResult (result);
+    }
+
 private:
+    void showSafeAudioSettingsDialog()
+    {
+        juce::DialogWindow::LaunchOptions options;
+        auto content = std::make_unique<SafeAudioSettingsComponent> (getDeviceManager());
+
+        options.content.setOwned (content.release());
+        options.dialogTitle = "Audio/MIDI Settings";
+        options.dialogBackgroundColour = findColour (juce::ResizableWindow::backgroundColourId);
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = false;
+        options.launchAsync();
+    }
+
     void hideCustomTitlebarOptionsButton()
     {
         for (int i = 0; i < getNumChildComponents(); ++i)
@@ -114,7 +208,7 @@ public:
        #if (JUCE_ANDROID || JUCE_IOS) && ! JUCE_DONT_AUTO_OPEN_MIDI_DEVICES_ON_MOBILE
             true;
        #else
-            false;
+            true;
        #endif
 
        #ifdef JucePlugin_PreferredChannelConfigurations
@@ -125,10 +219,13 @@ public:
         const juce::Array<juce::StandalonePluginHolder::PluginInOuts> channelConfig;
        #endif
 
+        juce::AudioDeviceManager::AudioDeviceSetup preferredSetup;
+        preferredSetup.bufferSize = 128;
+
         return std::make_unique<juce::StandalonePluginHolder> (appProperties.getUserSettings(),
                                                                false,
                                                                juce::String {},
-                                                               nullptr,
+                                                               &preferredSetup,
                                                                channelConfig,
                                                                autoOpenMidiDevices);
     }

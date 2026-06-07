@@ -7,6 +7,8 @@ namespace macro_osc
 {
 namespace
 {
+constexpr double kDcBlockerCutoffHz = 20.0;
+
 juce::NormalisableRange<float> skewedRange (float start, float end, float interval, float skew)
 {
     return { start, end, interval, skew };
@@ -59,6 +61,13 @@ void MacroOscAudioProcessor::prepareToPlay (double sampleRate, int)
     synth.setCurrentPlaybackSampleRate (sampleRate);
     for (auto* voice : braidsVoices)
         voice->prepare (sampleRate);
+
+    if (sampleRate > 0.0)
+        dcBlockerCoefficient = static_cast<float> (std::exp (-2.0 * juce::MathConstants<double>::pi * kDcBlockerCutoffHz / sampleRate));
+    else
+        dcBlockerCoefficient = 0.995f;
+
+    resetOutputDcBlocker();
 }
 
 void MacroOscAudioProcessor::releaseResources()
@@ -83,6 +92,7 @@ void MacroOscAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         voice->setParameters (voiceParameters);
 
     synth.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
+    applyOutputDcBlocker (buffer);
 }
 
 juce::AudioProcessorEditor* MacroOscAudioProcessor::createEditor()
@@ -174,6 +184,37 @@ void MacroOscAudioProcessor::cacheRawParameterPointers()
     }
 }
 
+void MacroOscAudioProcessor::resetOutputDcBlocker() noexcept
+{
+    dcBlockerPreviousInput.fill (0.0f);
+    dcBlockerPreviousOutput.fill (0.0f);
+}
+
+void MacroOscAudioProcessor::applyOutputDcBlocker (juce::AudioBuffer<float>& buffer) noexcept
+{
+    const auto channels = juce::jmin (buffer.getNumChannels(), static_cast<int> (dcBlockerPreviousInput.size()));
+    const auto samples = buffer.getNumSamples();
+
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        auto* data = buffer.getWritePointer (channel);
+        auto previousInput = dcBlockerPreviousInput[static_cast<size_t> (channel)];
+        auto previousOutput = dcBlockerPreviousOutput[static_cast<size_t> (channel)];
+
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            const auto input = data[sample];
+            const auto output = input - previousInput + dcBlockerCoefficient * previousOutput;
+            data[sample] = output;
+            previousInput = input;
+            previousOutput = output;
+        }
+
+        dcBlockerPreviousInput[static_cast<size_t> (channel)] = previousInput;
+        dcBlockerPreviousOutput[static_cast<size_t> (channel)] = previousOutput;
+    }
+}
+
 void MacroOscAudioProcessor::updateHostTempo() noexcept
 {
     if (auto* playHead = getPlayHead())
@@ -241,7 +282,7 @@ MacroOscAudioProcessor::APVTS::ParameterLayout MacroOscAudioProcessor::createPar
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { ParamIDs::sustain, 1 }, "Sustain", juce::NormalisableRange<float> { 0.0f, 1.0f }, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParamIDs::release, 1 }, "Release", skewedRange (0.0f, 10.0f, 0.001f, 0.35f), 2.0f));
+        juce::ParameterID { ParamIDs::release, 1 }, "Release", skewedRange (0.0f, 10.0f, 0.001f, 0.35f), 0.35f));
 
     for (int slot = 0; slot < kMsegSlotCount; ++slot)
     {
