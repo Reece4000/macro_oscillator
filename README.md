@@ -38,6 +38,13 @@ cmake --build build --config Debug
 
 Build products are written under the local `build/` directory.
 
-## Credits
+## License
 
-Macro OSC includes Braids oscillator DSP derived from Mutable Instruments sources. The Mutable DSP license is included at `Source/ThirdParty/Mutable/LICENSE`.
+Except where noted below, Macro OSC source code and first-party assets are
+licensed under the GNU Affero General Public License version 3 or later. See
+`LICENSE`.
+
+Third-party source and asset notices are listed in `THIRD_PARTY_NOTICES.md`.
+That includes the Mutable Instruments Braids/stmlib sources under
+`Source/ThirdParty/Mutable/`, the bundled Inter and DSEG fonts, and the external
+JUCE dependency.
