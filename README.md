@@ -30,8 +30,8 @@ Macro OSC builds as:
 ## Download
 
 The current macOS VST3 build is available from the
-[v0.1.0 release](https://github.com/Reece4000/macro_oscillator/releases/tag/v0.1.0).
-Download `MacroOSC-macOS-arm64-v0.1.0-vst3.zip`, unzip it, and copy
+[v0.1.1 release](https://github.com/Reece4000/macro_oscillator/releases/tag/v0.1.1).
+Download `MacroOSC-macOS-arm64-v0.1.1-vst3.zip`, unzip it, and copy
 `Macro OSC.vst3` to `~/Library/Audio/Plug-Ins/VST3/`.
 
 This release is built for Apple Silicon Macs and is ad-hoc signed.
