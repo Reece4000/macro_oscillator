@@ -245,6 +245,9 @@ class DigitalOscillator {
   
   inline void Init() {
     memset(&state_, 0, sizeof(state_));
+    // Each desktop voice owns its delay memory; it is not zeroed by firmware
+    // startup. Old/uninitialized samples must not excite a new model.
+    memset(&delay_lines_, 0, sizeof(delay_lines_));
     pulse_[0].Init();
     pulse_[1].Init();
     pulse_[2].Init();
@@ -253,6 +256,17 @@ class DigitalOscillator {
     svf_[1].Init();
     svf_[2].Init();
     phase_ = 0;
+    // Init is also used when a desktop polyphonic voice starts a fresh note.
+    // Render() calls Init() on a shape change after the caller has set pitch
+    // and parameters, so those inputs are kept: resetting them made strike
+    // models (plucked, bowed, bell...) set up their first block at pitch 0.
+    // Smoothing starts from the current parameters rather than sweeping from 0.
+    phase_increment_ = delay_ = 0;
+    previous_parameter_[0] = parameter_[0];
+    previous_parameter_[1] = parameter_[1];
+    smoothed_parameter_ = parameter_[0] << 1;
+    active_voice_ = 0;
+    previous_shape_ = OSC_SHAPE_TRIPLE_RING_MOD;
     strike_ = true;
     init_ = true;
   }
@@ -338,22 +352,22 @@ class DigitalOscillator {
       int16_t y,
       uint8_t formant);
    
-  uint32_t phase_;
-  uint32_t phase_increment_;
-  uint32_t delay_;
+  uint32_t phase_ = 0;
+  uint32_t phase_increment_ = 0;
+  uint32_t delay_ = 0;
 
-  int16_t parameter_[2];
-  int16_t previous_parameter_[2];
-  int32_t smoothed_parameter_;
-  int16_t pitch_;
+  int16_t parameter_[2] = {};
+  int16_t previous_parameter_[2] = {};
+  int32_t smoothed_parameter_ = 0;
+  int16_t pitch_ = 0;
   
-  uint8_t active_voice_;
+  uint8_t active_voice_ = 0;
   
   bool init_;
   bool strike_;
 
   DigitalOscillatorShape shape_;
-  DigitalOscillatorShape previous_shape_;
+  DigitalOscillatorShape previous_shape_ = OSC_SHAPE_TRIPLE_RING_MOD;
   DigitalOscillatorState state_;
   
   Excitation pulse_[4];

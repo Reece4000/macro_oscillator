@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(MacroOsc VERSION 0.1.0 LANGUAGES C CXX)
+project(MacroOsc VERSION 0.2.0 LANGUAGES C CXX)
 
 if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -22,8 +22,9 @@ juce_add_binary_data(MacroOscAssets
     SOURCES
         Source/Assets/macro_oscillator_backing.png
         Source/Assets/DSEG14Modern-Regular.ttf
-        Source/Assets/Inter-Bold.ttf
-        Source/Assets/Inter-SemiBold.ttf)
+        Source/Assets/Geist-Regular.ttf
+        Source/Assets/Geist-Medium.ttf
+        Source/Assets/GeistMono-Regular.ttf)
 
 set(MUTABLE_BRAIDS_SOURCES
     Source/ThirdParty/Mutable/braids/analog_oscillator.cc
@@ -33,8 +34,33 @@ set(MUTABLE_BRAIDS_SOURCES
     Source/ThirdParty/Mutable/stmlib/dsp/units.cc
     Source/ThirdParty/Mutable/stmlib/utils/random.cc)
 
+set(VOICE_EFFECTS_SOURCES
+    Source/DSP/VoiceEffects.cpp
+    Source/DSP/NativeFilterProcessor.cpp
+    Source/DSP/SamplerSvfFilter.cpp
+    Source/DSP/NativeDistortionProcessor.cpp
+    Source/DSP/NativeReductionProcessor.cpp
+    Source/DSP/Fx/DistortionKernelBank.cpp
+    Source/DSP/Fx/DistortionAmountProfiles.cpp)
+
+set(AIRWINDOWS_DISTORTION_SOURCES
+    Source/ThirdParty/Airwindows/Drive.cpp
+    Source/ThirdParty/Airwindows/Fracture.cpp
+    Source/ThirdParty/Airwindows/ToTape9.cpp
+    Source/ThirdParty/Airwindows/IronOxideClassic2.cpp
+    Source/ThirdParty/Airwindows/Density3.cpp
+    Source/ThirdParty/Airwindows/Spiral2.cpp
+    Source/ThirdParty/Airwindows/Tube2.cpp
+    Source/ThirdParty/Airwindows/Mackity.cpp
+    Source/ThirdParty/Airwindows/Coils2.cpp
+    Source/ThirdParty/Airwindows/FireAmp.cpp
+    Source/ThirdParty/Airwindows/DrumSlam.cpp
+    Source/ThirdParty/Airwindows/BitGlitter.cpp
+    Source/ThirdParty/Airwindows/DeBez.cpp
+)
+
 if (CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang|GNU")
-    set_source_files_properties(${MUTABLE_BRAIDS_SOURCES}
+    set_source_files_properties(${MUTABLE_BRAIDS_SOURCES} ${AIRWINDOWS_DISTORTION_SOURCES}
         PROPERTIES
             COMPILE_OPTIONS "-w")
 endif()
@@ -43,6 +69,7 @@ juce_add_plugin(MacroOsc
     COMPANY_NAME "Reece Mitchell"
     PRODUCT_NAME "Macro OSC"
     BUNDLE_ID "com.reecemitchell.macroosc"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Source/Assets/AppIcon.png"
     PLUGIN_MANUFACTURER_CODE Rmco
     PLUGIN_CODE Mosc
     FORMATS VST3 Standalone
@@ -56,8 +83,15 @@ target_sources(MacroOsc
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/Controls.cpp
+        Source/WaveformDisplay.cpp
+        Source/MsegEditor.cpp
+        Source/EffectsDisplays.cpp
         Source/DSP/BraidsVoice.cpp
-        ${MUTABLE_BRAIDS_SOURCES})
+        Source/DSP/BraidsSynthesiser.cpp
+        ${MUTABLE_BRAIDS_SOURCES}
+        ${VOICE_EFFECTS_SOURCES}
+        ${AIRWINDOWS_DISTORTION_SOURCES})
 
 target_include_directories(MacroOsc
     PRIVATE
@@ -92,4 +126,27 @@ if (TARGET MacroOsc_Standalone)
     target_compile_definitions(MacroOsc_Standalone
         PRIVATE
             JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+
+    # The app reaches the processor to offer audio settings from the plug-in's menu.
+    target_include_directories(MacroOsc_Standalone PRIVATE Source)
+    target_include_directories(MacroOsc_Standalone SYSTEM PRIVATE Source/ThirdParty/Mutable)
+endif()
+
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(MacroOscDspTests Tests/DspTests.cpp Tests/PolyphonyTests.cpp)
+    target_include_directories(MacroOscDspTests PRIVATE Source)
+    target_include_directories(MacroOscDspTests SYSTEM PRIVATE Source/ThirdParty/Mutable "${JUCE_DIR}/modules")
+    target_link_libraries(MacroOscDspTests PRIVATE MacroOsc)
+    add_test(NAME macro_osc_dsp COMMAND MacroOscDspTests)
+
+    # Load the actual bundle so keyboard regressions also exercise MIDI's VST3
+    # conversion, parameter delivery, and the plugin's public process callback.
+    add_executable(MacroOscVst3Tests Tests/Vst3Tests.cpp)
+    target_compile_definitions(MacroOscVst3Tests PRIVATE
+        JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(MacroOscVst3Tests PRIVATE juce::juce_audio_processors_headless)
+    add_dependencies(MacroOscVst3Tests MacroOsc_VST3)
+    add_test(NAME macro_osc_vst3 COMMAND MacroOscVst3Tests
+        "$<TARGET_FILE_DIR:MacroOsc_VST3>/../..")
 endif()

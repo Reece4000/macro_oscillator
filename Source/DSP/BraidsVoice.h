@@ -1,9 +1,11 @@
 #pragma once
 
 #include "DSP/Mseg.h"
+#include "DSP/VoiceEffects.h"
 #include "braids/macro_oscillator.h"
 
 #include <array>
+#include <optional>
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -11,6 +13,7 @@ namespace macro_osc
 {
 struct BraidsVoiceParameters
 {
+    VoiceEffectsParameters effects;
     int model {};
     float timbre { 0.5f };
     float color { 0.5f };
@@ -32,6 +35,7 @@ struct BraidsVoiceParameters
         float amountPercent { 50.0f };
         float offsetPercent {};
         float rateSeconds { 1.0f };
+        float randomPercent {};
         bool loop { true };
         const MsegShape* shape {};
     };
@@ -41,6 +45,7 @@ struct BraidsVoiceParameters
 
 struct BraidsModulatedValues
 {
+    VoiceEffectsParameters effects;
     int model {};
     float timbre {};
     float color {};
@@ -64,6 +69,11 @@ public:
 
     void prepare (double newSampleRate);
     void setParameters (const BraidsVoiceParameters& newParameters);
+    void captureStealTail();
+    void setGlideStartPitch (float pitch) noexcept { nextGlideStartPitch = pitch; }
+    // The next startNote moves this voice to the new note without retriggering.
+    void prepareLegato() noexcept { legatoPending = true; }
+    [[nodiscard]] float getCurrentPitch() const noexcept { return currentPitchSemitones; }
 
     [[nodiscard]] bool canPlaySound (juce::SynthesiserSound* sound) override;
     void startNote (int midiNoteNumber, float velocity, juce::SynthesiserSound*, int pitchWheelPosition) override;
@@ -76,6 +86,7 @@ private:
     static constexpr int kRenderBlockSize = 24;
     static constexpr double kBraidsNativeSampleRate = 96000.0;
     static constexpr float kPitchBendRangeSemitones = 2.0f;
+    static constexpr int kStealFadeCapacity = 2048;
     using LinearSmoother = juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>;
 
     enum class EnvelopeStage : std::uint8_t
@@ -136,6 +147,7 @@ private:
     };
 
     braids::MacroOscillator oscillator;
+    VoiceEffects effects;
     BraidsVoiceParameters parameters;
     ParameterSmoothers parameterSmoothers;
     SmoothedParameterSnapshot smoothedParameters;
@@ -148,24 +160,33 @@ private:
     int currentMidiNote { 60 };
     float currentPitchSemitones { 60.0f };
     float targetPitchSemitones { 60.0f };
-    float previousTargetPitchSemitones { 60.0f };
+    std::optional<float> nextGlideStartPitch;
+    float glideRateSemitonesPerSecond {};
+    bool legatoPending {};
     float pitchBendSemitones {};
     std::array<double, kMsegSlotCount> msegPhases {};
+    // This voice's random point offsets per slot: drawn at each note and each loop.
+    std::array<std::array<MsegPoint, kMsegMaxPoints>, kMsegSlotCount> msegOffsets {};
+    juce::Random msegRandom;
     double fmPhase {};
     double modPhase {};
     std::array<int16_t, kRenderBlockSize> renderBuffer {};
-    std::array<int16_t, kRenderBlockSize> oscillatorTempBuffer {};
     std::array<std::uint8_t, kRenderBlockSize> syncBuffer {};
-    int16_t carrySample {};
-    bool carryValid {};
-    bool hasPreviousTargetPitch {};
+    int renderReadIndex { kRenderBlockSize };
+    float modulatedLevelOffset {};
+    std::array<std::array<float, kStealFadeCapacity>, 2> stealTail {};
+    int stealTailLength {};
+    int stealTailPosition {};
+    bool keepStealTailOnStart {};
 
     void resetParameterSmoothers();
     void setParameterSmootherTargets() noexcept;
     void advanceSmoothedParameters (int numSamples) noexcept;
     [[nodiscard]] float nextEnvelopeSample() noexcept;
     [[nodiscard]] bool envelopeActive() const noexcept;
-    void renderOscillatorChunk (int numSamples, float pitchOffsetSemitones, float timbre, float color);
+    void renderOscillatorBlock();
+    void beginGlide (float targetPitch);
+    void drawMsegOffsets (int slotIndex) noexcept;
     void updateOscillatorParameters (float pitchOffsetSemitones, float timbre, float color);
     void advanceModulators (int numSamples, float fmAmount, float modulation) noexcept;
     [[nodiscard]] BraidsModulatedValues currentModulatedValues() const noexcept;

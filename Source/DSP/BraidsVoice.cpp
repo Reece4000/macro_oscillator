@@ -1,6 +1,7 @@
 #include "DSP/BraidsVoice.h"
 
 #include <cmath>
+#include <utility>
 
 #include <juce_core/juce_core.h>
 
@@ -14,6 +15,9 @@ constexpr float kMaxFmDepthSemitones = 24.0f;
 constexpr float kVoiceSilenceThreshold = 1.0e-5f;
 constexpr double kCustomParameterSmoothTimeSeconds = 0.01;
 constexpr float kMinimumSmoothedEnvelopeSeconds = 0.001f;
+// Each voice sits about 9 dB below full scale after its effects, so a full
+// chord stays clear of the output limiter instead of driving it constantly.
+constexpr float kVoiceHeadroom = 0.355f;
 
 [[nodiscard]] double wrapPhase (double phase) noexcept
 {
@@ -24,6 +28,7 @@ constexpr float kMinimumSmoothedEnvelopeSeconds = 0.001f;
 
 BraidsVoice::BraidsVoice()
 {
+    msegRandom.setSeedRandomly();
     oscillator.Init();
     resetParameterSmoothers();
 }
@@ -33,6 +38,8 @@ void BraidsVoice::prepare (double newSampleRate)
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 44100.0;
     sampleRatePitchOffsetSemitones = static_cast<float> (12.0 * std::log2 (kBraidsNativeSampleRate / sampleRate));
     resetParameterSmoothers();
+    effects.prepare (sampleRate);
+    renderReadIndex = kRenderBlockSize;
 }
 
 void BraidsVoice::setParameters (const BraidsVoiceParameters& newParameters)
@@ -145,23 +152,58 @@ bool BraidsVoice::canPlaySound (juce::SynthesiserSound* sound)
     return dynamic_cast<BraidsSound*> (sound) != nullptr;
 }
 
+void BraidsVoice::drawMsegOffsets (int slotIndex) noexcept
+{
+    for (auto& offset : msegOffsets[static_cast<size_t> (slotIndex)])
+        offset = { msegRandom.nextFloat() * 2.0f - 1.0f, msegRandom.nextFloat() * 2.0f - 1.0f };
+}
+
+void BraidsVoice::beginGlide (float targetPitch)
+{
+    // Glide takes the set time whatever the interval, from wherever the pitch is.
+    targetPitchSemitones = targetPitch;
+    const float portamento = smoothedParameters.portamentoSeconds;
+    if (portamento <= 1.0e-5f)
+    {
+        currentPitchSemitones = targetPitchSemitones;
+        glideRateSemitonesPerSecond = 0.0f;
+        return;
+    }
+    glideRateSemitonesPerSecond = std::abs (targetPitchSemitones - currentPitchSemitones) / portamento;
+}
+
 void BraidsVoice::startNote (int midiNoteNumber, float velocity, juce::SynthesiserSound*, int pitchWheelPosition)
 {
+    if (std::exchange (legatoPending, false) && envelopeStage != EnvelopeStage::idle)
+    {
+        // Legato: keep the envelope, oscillator and modulation running.
+        currentMidiNote = juce::jlimit (0, 127, midiNoteNumber);
+        if (nextGlideStartPitch)
+            currentPitchSemitones = *nextGlideStartPitch;
+        nextGlideStartPitch.reset();
+        beginGlide (static_cast<float> (currentMidiNote));
+        pitchWheelMoved (pitchWheelPosition);
+        return;
+    }
+    if (! keepStealTailOnStart)
+        stealTailLength = stealTailPosition = 0;
+    keepStealTailOnStart = false;
     resetParameterSmoothers();
     currentMidiNote = juce::jlimit (0, 127, midiNoteNumber);
-    targetPitchSemitones = static_cast<float> (currentMidiNote);
-    currentPitchSemitones = smoothedParameters.portamentoSeconds > 1.0e-5f && hasPreviousTargetPitch
-        ? previousTargetPitchSemitones
-        : targetPitchSemitones;
-    previousTargetPitchSemitones = targetPitchSemitones;
-    hasPreviousTargetPitch = true;
+    currentPitchSemitones = nextGlideStartPitch.value_or (static_cast<float> (currentMidiNote));
+    nextGlideStartPitch.reset();
+    beginGlide (static_cast<float> (currentMidiNote));
     currentVelocity = juce::jlimit (0.0f, 1.0f, velocity);
     msegPhases.fill (0.0);
+    for (int slot = 0; slot < kMsegSlotCount; ++slot)
+        drawMsegOffsets (slot);
     fmPhase = 0.0;
     modPhase = 0.0;
-    carryValid = false;
+    renderReadIndex = kRenderBlockSize;
     pitchWheelMoved (pitchWheelPosition);
+    oscillator.Init();
     oscillator.Strike();
+    effects.reset();
     envelopeStage = EnvelopeStage::attack;
     envelopeValue = smoothedParameters.attackSeconds <= 1.0e-5f ? 1.0f : 0.0f;
     releaseStartValue = 0.0f;
@@ -171,6 +213,16 @@ void BraidsVoice::startNote (int midiNoteNumber, float velocity, juce::Synthesis
 
 void BraidsVoice::stopNote (float, bool allowTailOff)
 {
+    // A legato start replaces the note in place; JUCE's preceding hard stop is skipped.
+    if (legatoPending && envelopeStage != EnvelopeStage::idle)
+        return;
+
+    // JUCE can stop the same voice again on pedal-up, another note-off, or a
+    // repeated note-on. A release is a one-way transition: restarting its slope
+    // would keep old notes sounding well beyond the original key release.
+    if (allowTailOff && envelopeStage == EnvelopeStage::release)
+        return;
+
     const float release = juce::jlimit (0.0f, 10.0f, smoothedParameters.releaseSeconds);
     if (allowTailOff && release > 1.0e-5f && envelopeValue > kVoiceSilenceThreshold)
     {
@@ -195,6 +247,21 @@ void BraidsVoice::controllerMoved (int, int)
 {
 }
 
+void BraidsVoice::captureStealTail()
+{
+    // Preserve five milliseconds of the outgoing oscillator and effect history.
+    // Fixed stack storage also handles another steal during an existing fade.
+    const int frames = juce::jlimit (1, kStealFadeCapacity, juce::roundToInt (sampleRate * 0.005));
+    std::array<std::array<float, kStealFadeCapacity>, 2> captured {};
+    float* channels[] { captured[0].data(), captured[1].data() };
+    juce::AudioBuffer<float> buffer (channels, 2, frames);
+    renderNextBlock (buffer, 0, frames);
+    stealTail = captured;
+    stealTailLength = frames;
+    stealTailPosition = 0;
+    keepStealTailOnStart = true;
+}
+
 void BraidsVoice::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int startSample, int numSamples)
 {
     if (! isVoiceActive())
@@ -204,46 +271,44 @@ void BraidsVoice::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int s
     int rendered = 0;
     while (rendered < numSamples)
     {
-        const int chunk = juce::jmin (kRenderBlockSize, numSamples - rendered);
-        advanceSmoothedParameters (chunk);
-        const auto values = currentModulatedValues();
-        const float levelOffset = values.level - smoothedParameters.level;
-        const float fmWave = values.fmAmount > 1.0e-5f ? std::sin (static_cast<float> (fmPhase)) : 0.0f;
-        const float modWave = values.modulation > 1.0e-5f ? std::sin (static_cast<float> (modPhase)) : 0.0f;
-        const float fmPitchOffset = fmWave * values.fmAmount * kMaxFmDepthSemitones;
-        const float timbreOffset = modWave * values.modulation * kMacroModDepth;
+        if (renderReadIndex == kRenderBlockSize)
+            renderOscillatorBlock();
+        const int chunk = juce::jmin (kRenderBlockSize - renderReadIndex, numSamples - rendered);
 
-        oscillator.set_shape (static_cast<braids::MacroOscillatorShape> (values.model));
-        renderOscillatorChunk (chunk,
-                               values.pitchOffsetSemitones + fmPitchOffset,
-                               values.timbre + timbreOffset,
-                               values.color - timbreOffset);
-
-        bool audible = false;
         const int outputIndex = startSample + rendered;
         auto* left = numChannels > 0 ? outputBuffer.getWritePointer (0, outputIndex) : nullptr;
         auto* right = numChannels > 1 ? outputBuffer.getWritePointer (1, outputIndex) : nullptr;
         for (int i = 0; i < chunk; ++i)
         {
             const float env = nextEnvelopeSample();
-            const float level = juce::jlimit (0.0f, 1.5f, parameterSmoothers.level.getNextValue() + levelOffset);
-            float sample = static_cast<float> (renderBuffer[static_cast<size_t> (i)]) / 32768.0f;
+            const float level = juce::jlimit (0.0f, 1.5f, parameterSmoothers.level.getNextValue() + modulatedLevelOffset);
+            float sample = static_cast<float> (renderBuffer[static_cast<size_t> (renderReadIndex + i)]) / 32768.0f;
             sample *= env * currentVelocity * level;
             sample = juce::jlimit (-1.0f, 1.0f, sample);
-            audible = audible || std::abs (sample) > kVoiceSilenceThreshold || env > kVoiceSilenceThreshold;
 
+            float sampleLeft = sample, sampleRight = sample;
+            effects.process (sampleLeft, sampleRight);
+            sampleLeft *= kVoiceHeadroom;
+            sampleRight *= kVoiceHeadroom;
+            if (stealTailPosition < stealTailLength)
+            {
+                const float fade = static_cast<float> (stealTailPosition) / static_cast<float> (stealTailLength);
+                const auto tailIndex = static_cast<size_t> (stealTailPosition++);
+                sampleLeft = stealTail[0][tailIndex] * (1.0f - fade) + sampleLeft * fade;
+                sampleRight = stealTail[1][tailIndex] * (1.0f - fade) + sampleRight * fade;
+            }
             if (left != nullptr)
-                left[i] += sample;
+                left[i] += numChannels == 1 ? 0.5f * (sampleLeft + sampleRight) : sampleLeft;
             if (right != nullptr)
-                right[i] += sample;
+                right[i] += sampleRight;
             for (int channel = 2; channel < numChannels; ++channel)
-                outputBuffer.addSample (channel, outputIndex + i, sample);
+                outputBuffer.addSample (channel, outputIndex + i, 0.5f * (sampleLeft + sampleRight));
         }
 
-        advanceModulators (chunk, values.fmAmount, values.modulation);
+        renderReadIndex += chunk;
         rendered += chunk;
 
-        if (! envelopeActive() || ! audible)
+        if (! envelopeActive() && stealTailPosition >= stealTailLength)
         {
             envelopeStage = EnvelopeStage::idle;
             envelopeValue = 0.0f;
@@ -312,50 +377,39 @@ bool BraidsVoice::envelopeActive() const noexcept
     return envelopeStage != EnvelopeStage::idle;
 }
 
-void BraidsVoice::renderOscillatorChunk (int numSamples, float pitchOffsetSemitones, float timbre, float color)
+void BraidsVoice::renderOscillatorBlock()
 {
-    if (numSamples <= 0)
-        return;
-
-    int copied = 0;
-    if (carryValid)
-    {
-        renderBuffer[0] = carrySample;
-        carrySample = 0;
-        carryValid = false;
-        copied = 1;
-    }
-
-    const int remaining = numSamples - copied;
-    if (remaining <= 0)
-        return;
-
-    const bool needsPadding = (remaining & 1) != 0;
-    const int renderSize = juce::jlimit (2, kRenderBlockSize, remaining + (needsPadding ? 1 : 0));
-    std::fill_n (syncBuffer.begin(), static_cast<size_t> (renderSize), static_cast<std::uint8_t> (0));
-
-    updateOscillatorParameters (pitchOffsetSemitones, timbre, color);
-    oscillator.Render (syncBuffer.data(), oscillatorTempBuffer.data(), static_cast<size_t> (renderSize));
-    std::copy_n (oscillatorTempBuffer.begin(), remaining, renderBuffer.begin() + copied);
-
-    if (needsPadding)
-    {
-        carrySample = oscillatorTempBuffer[static_cast<size_t> (remaining)];
-        carryValid = true;
-    }
+    // All models receive complete 24-sample blocks. Keep the remainder across
+    // host callbacks and parameter changes, including single-sample requests.
+    // Control and modulation clocks also follow this stream, not host splits.
+    advanceSmoothedParameters (kRenderBlockSize);
+    const auto values = currentModulatedValues();
+    effects.beginBlock (values.effects, kRenderBlockSize);
+    modulatedLevelOffset = values.level - smoothedParameters.level;
+    const float fmWave = values.fmAmount > 1.0e-5f ? std::sin (static_cast<float> (fmPhase)) : 0.0f;
+    const float modWave = values.modulation > 1.0e-5f ? std::sin (static_cast<float> (modPhase)) : 0.0f;
+    const float timbreOffset = modWave * values.modulation * kMacroModDepth;
+    oscillator.set_shape (static_cast<braids::MacroOscillatorShape> (values.model));
+    updateOscillatorParameters (values.pitchOffsetSemitones + fmWave * values.fmAmount * kMaxFmDepthSemitones,
+                                values.timbre + timbreOffset,
+                                values.color - timbreOffset);
+    syncBuffer.fill (0);
+    oscillator.Render (syncBuffer.data(), renderBuffer.data(), renderBuffer.size());
+    renderReadIndex = 0;
+    advanceModulators (kRenderBlockSize, values.fmAmount, values.modulation);
 }
 
 void BraidsVoice::updateOscillatorParameters (float pitchOffsetSemitones, float timbre, float color)
 {
-    const float portamento = juce::jlimit (0.0f, 2.0f, smoothedParameters.portamentoSeconds);
-    if (portamento <= 1.0e-5f)
+    if (glideRateSemitonesPerSecond <= 0.0f || smoothedParameters.portamentoSeconds <= 1.0e-5f)
     {
         currentPitchSemitones = targetPitchSemitones;
     }
     else
     {
-        const float coefficient = 1.0f - std::exp (static_cast<float> (-8.0 / (sampleRate * static_cast<double> (portamento))));
-        currentPitchSemitones += (targetPitchSemitones - currentPitchSemitones) * coefficient;
+        // Linear in pitch at the rate set when the glide began; one render block per step.
+        const float step = static_cast<float> (glideRateSemitonesPerSecond * kRenderBlockSize / sampleRate);
+        currentPitchSemitones += juce::jlimit (-step, step, targetPitchSemitones - currentPitchSemitones);
     }
 
     const float semitones = currentPitchSemitones
@@ -385,7 +439,12 @@ void BraidsVoice::advanceModulators (int numSamples, float fmAmount, float modul
         phase += static_cast<double> (numSamples) / (sampleRate * static_cast<double> (seconds));
 
         if (slot.loop)
+        {
+            // Each new cycle gets new random offsets, so a loop never repeats exactly.
+            if (phase >= 1.0)
+                drawMsegOffsets (i);
             phase -= std::floor (phase);
+        }
         else
             phase = juce::jlimit (0.0, 1.0, phase);
     }
@@ -413,6 +472,7 @@ BraidsModulatedValues BraidsVoice::currentModulatedValues() const noexcept
 {
     const int maxModel = static_cast<int> (braids::MACRO_OSC_SHAPE_LAST_ACCESSIBLE_FROM_META);
     BraidsModulatedValues values;
+    values.effects = parameters.effects;
     float model = static_cast<float> (juce::jlimit (0, maxModel, parameters.model));
     values.timbre = juce::jlimit (0.0f, 1.0f, parameters.timbre);
     values.color = juce::jlimit (0.0f, 1.0f, parameters.color);
@@ -449,6 +509,36 @@ BraidsModulatedValues BraidsVoice::currentModulatedValues() const noexcept
             case MsegDestination::level:
                 values.level += targetDelta (values.level, 0.0f, 1.5f, wave);
                 break;
+            case MsegDestination::filterFrequency:
+            {
+                const float logFrequency = std::log2 (juce::jlimit (20.0f, 20000.0f, values.effects.filterFrequency));
+                values.effects.filterFrequency = std::exp2 (logFrequency
+                    + targetDelta (logFrequency, std::log2 (20.0f), std::log2 (20000.0f), wave));
+                break;
+            }
+            case MsegDestination::filterQ:
+                values.effects.filterQ += targetDelta (values.effects.filterQ, 1.0f, 30.0f, wave);
+                break;
+            case MsegDestination::distortionAmount:
+                values.effects.distortionAmount += targetDelta (values.effects.distortionAmount, 0.0f, 1.0f, wave);
+                break;
+            case MsegDestination::distortionMix:
+                values.effects.distortionMix += targetDelta (values.effects.distortionMix, 0.0f, 1.0f, wave);
+                break;
+            case MsegDestination::distortionOutput:
+                values.effects.distortionOutput += targetDelta (values.effects.distortionOutput, 0.0f, 1.0f, wave);
+                break;
+            case MsegDestination::filterType:
+                values.effects.filterType = juce::jlimit (0, 3, juce::roundToInt (
+                    static_cast<float> (values.effects.filterType)
+                    + targetDelta (static_cast<float> (values.effects.filterType), 0.0f, 3.0f, wave)));
+                break;
+            case MsegDestination::distortionType:
+                values.effects.distortionType = lodo::engine::fx::clampDistortionType (juce::roundToInt (
+                    static_cast<float> (values.effects.distortionType)
+                    + targetDelta (static_cast<float> (values.effects.distortionType), 0.0f,
+                                   static_cast<float> (lodo::engine::fx::maxDistortionType), wave)));
+                break;
             case MsegDestination::off:
                 break;
         }
@@ -473,7 +563,9 @@ float BraidsVoice::currentMsegWave (int slotIndex) const noexcept
     if (slot.destination == static_cast<int> (MsegDestination::off) || slot.shape == nullptr)
         return 0.0f;
 
-    const float rawWave = slot.shape->evaluateBipolar (static_cast<float> (msegPhases[static_cast<size_t> (slotIndex)]));
+    const float rawWave = slot.shape->evaluateUnipolar (static_cast<float> (msegPhases[static_cast<size_t> (slotIndex)]),
+                                                        msegOffsets[static_cast<size_t> (slotIndex)],
+                                                        slot.randomPercent * 0.01f) * 2.0f - 1.0f;
     const auto& smoothedSlot = smoothedParameters.msegSlots[static_cast<size_t> (slotIndex)];
     const float scaled = (rawWave * (smoothedSlot.amountPercent * 0.01f)) + (smoothedSlot.offsetPercent * 0.01f);
     return juce::jlimit (-1.0f, 1.0f, scaled);

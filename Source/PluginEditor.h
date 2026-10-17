@@ -1,6 +1,8 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "EffectsDisplays.h"
+#include "UITheme.h"
 
 #include <atomic>
 #include <functional>
@@ -11,56 +13,17 @@
 
 namespace macro_osc
 {
-struct EditorFonts
-{
-    juce::Font digital { juce::FontOptions (28.0f) };
-    juce::Font label { juce::FontOptions (14.0f) };
-    juce::Font title { juce::FontOptions (22.0f) };
-};
+using EditorFonts = ui::Fonts;
 
-class DevicePanel final : public juce::Component
+// One parameter: a lowercase label, its value, and a thin pill track. Drag in
+// any direction; Shift is fine; double-click, Backspace or Delete resets.
+class ParameterSlider final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    DevicePanel (MacroOscAudioProcessor& processor, juce::Image backing, EditorFonts fonts);
+    enum class Layout { stacked, row };
+    enum class Graphic { none, readout, glide, attack, decay, sustain, release };
 
-    void paint (juce::Graphics& g) override;
-    void mouseDown (const juce::MouseEvent& event) override;
-    void mouseDrag (const juce::MouseEvent& event) override;
-    void mouseUp (const juce::MouseEvent& event) override;
-    void mouseMove (const juce::MouseEvent& event) override;
-    void mouseExit (const juce::MouseEvent& event) override;
-    void mouseDoubleClick (const juce::MouseEvent& event) override;
-
-private:
-    struct DragTarget
-    {
-        const char* parameterId {};
-        float pixelsPerUnit { 120.0f };
-    };
-
-    MacroOscAudioProcessor& audioProcessor;
-    juce::Image backgroundImage;
-    EditorFonts fonts;
-    DragTarget activeDrag;
-    float dragStartNormalised {};
-    juce::Point<float> dragStartPosition;
-    bool dragging {};
-
-    [[nodiscard]] juce::Rectangle<float> imageBounds() const;
-    [[nodiscard]] juce::Rectangle<float> designRect (float x, float y, float w, float h) const;
-    [[nodiscard]] DragTarget targetForPosition (juce::Point<float> position) const;
-    [[nodiscard]] float parameterValue (const char* parameterId) const;
-    void beginGesture (const char* parameterId);
-    void endGesture (const char* parameterId);
-    void paintModelDisplay (juce::Graphics& g);
-    void paintMacroValue (juce::Graphics& g, const char* label, const char* parameterId, int column, juce::Colour accent);
-    [[nodiscard]] juce::String modelDisplayText() const;
-};
-
-class RackValueBox final : public juce::Component
-{
-public:
-    RackValueBox (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    ParameterSlider (MacroOscAudioProcessor& processor, EditorFonts fonts);
 
     void configure (const juce::String& labelText,
                     const char* parameter,
@@ -68,12 +31,27 @@ public:
                     const juce::String& unitText,
                     int decimals,
                     float displayMultiplier = 1.0f);
+    void setLayout (Layout newLayout) { layout = newLayout; repaint(); }
+    void setGraphic (Graphic newGraphic) { graphic = newGraphic; repaint(); }
+    void setOnBand (bool shouldUseBandColours) { onBand = shouldUseBandColours; repaint(); }
+    void setFormatter (std::function<juce::String (float)> newFormatter) { formatter = std::move (newFormatter); }
+    void setSnapper (std::function<float (float)> newSnapper) { snapper = std::move (newSnapper); }
 
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    bool keyPressed (const juce::KeyPress& key) override;
+    void focusGained (FocusChangeType cause) override
+    {
+        // Clicking takes focus too; only keyboard navigation shows the ring.
+        focusVisible = cause != focusChangedByMouseClick;
+        repaint();
+    }
+    void focusLost (FocusChangeType) override { repaint(); }
 
 private:
     MacroOscAudioProcessor& audioProcessor;
@@ -81,43 +59,153 @@ private:
     juce::String label;
     juce::String unit;
     const char* parameterId {};
-    juce::Colour accentColour { 0xffffc928 };
+    juce::Colour accentColour { ui::turquoise };
     int decimalPlaces {};
     float multiplier { 1.0f };
+    Layout layout { Layout::stacked };
+    Graphic graphic { Graphic::none };
+    bool onBand {};
+    bool focusVisible {};
+    bool dragging {};
     float dragStartNormalised {};
     juce::Point<float> dragStartPosition;
-    bool dragging {};
+    std::function<juce::String (float)> formatter;
+    std::function<float (float)> snapper;
 
+    [[nodiscard]] juce::RangedAudioParameter* parameter() const;
     [[nodiscard]] float parameterValue() const;
-    void setParameterValue (float value);
+    [[nodiscard]] juce::String displayValue() const;
+    [[nodiscard]] juce::Rectangle<float> trackBounds() const;
+    void setNormalised (float normalised);
     void beginGesture();
     void endGesture();
-    [[nodiscard]] juce::String displayValue() const;
+    void paintGraphic (juce::Graphics& g, juce::Rectangle<float> area, float normalised) const;
 };
 
-class MsegSlotStrip final : public juce::Component
+class IconButton final : public juce::Button
 {
 public:
-    MsegSlotStrip (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    enum class Icon { previous, next, browse, menu };
+    IconButton (const juce::String& name, Icon icon);
+    void paintButton (juce::Graphics& g, bool over, bool down) override;
+
+private:
+    Icon icon;
+};
+
+// All 47 models as small cells grouped by family; click one to select it.
+class ModelStrip final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    ModelStrip (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    void paint (juce::Graphics& g) override;
+    void mouseMove (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+
+private:
+    MacroOscAudioProcessor& audioProcessor;
+    EditorFonts fonts;
+    int hovered { -1 };
+    [[nodiscard]] juce::Rectangle<float> cellBounds (int model) const;
+    [[nodiscard]] int modelAt (juce::Point<float> position) const;
+};
+
+// The selected model's waveform at its base Timbre and Color, rendered offline.
+class WaveformDisplay final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit WaveformDisplay (MacroOscAudioProcessor& processor);
+    void refresh();
+    void paint (juce::Graphics& g) override;
+
+private:
+    MacroOscAudioProcessor& audioProcessor;
+    std::array<float, 3> lastParameters { -1.0f, -1.0f, -1.0f };
+    std::vector<float> minimums, maximums;
+    bool envelopeView {};
+};
+
+class SegmentedControl final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    SegmentedControl (MacroOscAudioProcessor& processor, const char* parameterId,
+                      juce::StringArray options, EditorFonts fonts);
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
+    bool keyPressed (const juce::KeyPress& key) override;
+
+private:
+    juce::StringArray options;
+    EditorFonts fonts;
+    juce::ParameterAttachment attachment;
+    int selected {};
+    int hovered { -1 };
+    [[nodiscard]] juce::Rectangle<float> optionBounds (int index) const;
+};
+
+// Switches distortion off, and back on to the last type used.
+class PowerButton final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit PowerButton (MacroOscAudioProcessor& processor);
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    MacroOscAudioProcessor& audioProcessor;
+    int lastType { 1 };
+};
+
+// Eight cells: how many voices are available, and how many are sounding.
+// Click or drag across the cells to set the voice count.
+class VoiceControl final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    VoiceControl (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    void update();
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+
+private:
+    MacroOscAudioProcessor& audioProcessor;
+    EditorFonts fonts;
+    int active {}, limit {}, mode {};
+    bool dragging {};
+    void setFromPosition (float x);
+};
+
+class MsegSlotSelector final : public juce::Component
+{
+public:
+    MsegSlotSelector (MacroOscAudioProcessor& processor, EditorFonts fonts);
 
     void setActiveSlot (int slot);
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void focusGained (FocusChangeType) override { repaint(); }
+    void focusLost (FocusChangeType) override { repaint(); }
 
-    std::function<void(int)> onSlotSelected;
+    std::function<void (int)> onSlotSelected;
 
 private:
     MacroOscAudioProcessor& audioProcessor;
     EditorFonts fonts;
     int activeSlot {};
-
-    void paintSlot (juce::Graphics& g, juce::Rectangle<float> bounds, int slot);
+    [[nodiscard]] static juce::Rectangle<float> slotBounds (int slot);
 };
 
-class MsegCurveEditor final : public juce::Component
+class MsegCurveEditor final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    MsegCurveEditor (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    explicit MsegCurveEditor (MacroOscAudioProcessor& processor);
 
     void setActiveSlot (int slot);
     void setPoints (std::vector<MsegPoint> newPoints);
@@ -129,56 +217,91 @@ public:
     void mouseUp (const juce::MouseEvent& event) override;
     void mouseMove (const juce::MouseEvent& event) override;
     void mouseExit (const juce::MouseEvent& event) override;
-    void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
-    enum class DragMode
-    {
-        none,
-        curvePoint,
-        offset,
-        scale,
-        duration
-    };
-
     MacroOscAudioProcessor& audioProcessor;
-    EditorFonts fonts;
     std::vector<MsegPoint> points;
     int activeSlot {};
     int selectedIndex { -1 };
     int hoveredIndex { -1 };
     bool editing {};
-    DragMode dragMode { DragMode::none };
-    DragMode hoveredSlider { DragMode::none };
 
     [[nodiscard]] juce::Rectangle<float> graphBounds() const;
-    [[nodiscard]] juce::Rectangle<float> offsetSliderBounds() const;
-    [[nodiscard]] juce::Rectangle<float> scaleSliderBounds() const;
-    [[nodiscard]] juce::Rectangle<float> durationSliderBounds() const;
-    [[nodiscard]] juce::Rectangle<float> offsetLabelBounds() const;
-    [[nodiscard]] juce::Rectangle<float> scaleLabelBounds() const;
     [[nodiscard]] juce::Point<float> pointToScreen (const MsegPoint& point) const;
     [[nodiscard]] MsegPoint screenToPoint (juce::Point<float> position) const;
-    [[nodiscard]] MsegPoint pointWithScaleAndOffset (const MsegPoint& point) const;
-    [[nodiscard]] int findNearestPoint (juce::Point<float> position) const;
-    [[nodiscard]] juce::Rectangle<float> sliderHandleBounds (DragMode mode) const;
-    [[nodiscard]] DragMode sliderHandleAtPosition (juce::Point<float> position) const;
-    [[nodiscard]] DragMode sliderAtPosition (juce::Point<float> position) const;
-    [[nodiscard]] const char* parameterForDragMode (DragMode mode) const;
-    [[nodiscard]] float normalisedParameterValue (const char* parameterId) const;
-    [[nodiscard]] float sliderDisplayNormalised (DragMode mode) const;
-    void updateHoverTarget (juce::Point<float> position);
-    void setSliderFromPosition (DragMode mode, juce::Point<float> position);
-    void beginParameterGesture (DragMode mode);
-    void endParameterGesture (DragMode mode);
+    [[nodiscard]] MsegPoint appliedPoint (const MsegPoint& point) const;
+    [[nodiscard]] int findNearestPoint (juce::Point<float> position, float radius) const;
     bool deletePointNear (juce::Point<float> position);
     void commit (bool notifyEditor);
 };
 
-class MacroOscAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                           private juce::ChangeListener,
-                                           private juce::AudioProcessorValueTreeState::Listener,
-                                           private juce::Timer
+// The whole instrument at its design size; the editor scales it to the window.
+class EditorView final : public juce::Component,
+                         private juce::ChangeListener,
+                         private juce::AudioProcessorValueTreeState::Listener,
+                         private juce::Timer
+{
+public:
+    EditorView (MacroOscAudioProcessor& processor, EditorFonts fonts);
+    ~EditorView() override;
+
+    // Set by the editor: resize the window, and switch tooltips on or off.
+    std::function<void (float)> onScaleChosen;
+    std::function<void (bool)> onTooltipsChanged;
+
+    void paint (juce::Graphics& g) override;
+    void resized() override;
+
+private:
+    using ComboBoxAttachment = MacroOscAudioProcessor::APVTS::ComboBoxAttachment;
+    using ButtonAttachment = MacroOscAudioProcessor::APVTS::ButtonAttachment;
+
+    MacroOscAudioProcessor& audioProcessor;
+    EditorFonts fonts;
+    IconButton menuButton { "Settings", IconButton::Icon::menu };
+    ParameterSlider volume;
+    VoiceControl voiceControl;
+    SegmentedControl voiceMode;
+    juce::ComboBox model;
+    IconButton previous { "Previous model", IconButton::Icon::previous };
+    IconButton next { "Next model", IconButton::Icon::next };
+    IconButton browse { "Browse models", IconButton::Icon::browse };
+    ModelStrip modelStrip;
+    WaveformDisplay waveform;
+    ParameterSlider timbre, color, modulation, fm;
+    juce::ComboBox distortionType;
+    PowerButton distortionPower;
+    DistortionDisplay distortionDisplay;
+    ParameterSlider amount, mix, output;
+    SegmentedControl filterType;
+    FilterDisplay filterDisplay;
+    ParameterSlider frequency, q;
+    ParameterSlider pitch, detune, glide, attack, decay, sustain, release;
+    MsegSlotSelector msegSlots;
+    juce::ComboBox destination;
+    juce::ToggleButton loop { "loop" }, sync { "sync" };
+    MsegCurveEditor msegEditor;
+    ParameterSlider msegOffset, msegScale, msegRate, msegRandom;
+    std::unique_ptr<ComboBoxAttachment> modelAttachment, distortionAttachment, destinationAttachment;
+    std::unique_ptr<ButtonAttachment> loopAttachment, syncAttachment;
+    std::atomic_bool parameterUiDirty { false };
+    int activeMsegSlot {};
+    juce::String shownPresetName;
+    std::unique_ptr<juce::FileChooser> presetChooser;
+
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void timerCallback() override;
+    void stepModel (int delta);
+    void showSettingsMenu();
+    void savePreset();
+    void openPreset();
+    void loadPreset (const juce::File& file);
+    void setActiveMsegSlot (int slot);
+    [[nodiscard]] std::vector<ParameterSlider*> sliders();
+};
+
+class MacroOscAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit MacroOscAudioProcessorEditor (MacroOscAudioProcessor&);
@@ -188,37 +311,15 @@ public:
     void resized() override;
 
 private:
-    using ComboBoxAttachment = MacroOscAudioProcessor::APVTS::ComboBoxAttachment;
-    using ButtonAttachment = MacroOscAudioProcessor::APVTS::ButtonAttachment;
-
     MacroOscAudioProcessor& audioProcessor;
     EditorFonts fonts;
-    DevicePanel devicePanel;
-    RackValueBox pitchBox;
-    RackValueBox detuneBox;
-    RackValueBox portaBox;
-    RackValueBox attackBox;
-    RackValueBox decayBox;
-    RackValueBox sustainBox;
-    RackValueBox releaseBox;
-    MsegSlotStrip msegSlots;
-    MsegCurveEditor msegEditor;
-    juce::ComboBox destinationBox;
-    juce::ToggleButton loopButton;
-    juce::ToggleButton syncButton;
-    std::unique_ptr<ComboBoxAttachment> destinationAttachment;
-    std::unique_ptr<ButtonAttachment> loopAttachment;
-    std::unique_ptr<ButtonAttachment> syncAttachment;
-    std::atomic_bool parameterUiDirty { false };
-    int activeMsegSlot {};
+    ui::LookAndFeel lookAndFeel;
+    EditorView view;
+    std::unique_ptr<juce::TooltipWindow> tooltipWindow;
+    bool restoringSize { true };
 
-    void changeListenerCallback (juce::ChangeBroadcaster*) override;
-    void parameterChanged (const juce::String& parameterID, float newValue) override;
-    void timerCallback() override;
-    void mouseDoubleClick (const juce::MouseEvent& event) override;
-    void setActiveMsegSlot (int slot);
-    void configureMsegAttachments();
-    void styleMsegControls();
+    void setTooltipsEnabled (bool enabled);
+
     [[nodiscard]] static EditorFonts loadFonts();
 };
 } // namespace macro_osc

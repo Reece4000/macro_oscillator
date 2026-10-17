@@ -70,12 +70,15 @@ class AnalogOscillator {
   inline void Init() {
     phase_ = 0;
     phase_increment_ = 1;
+    // Desktop voices are not zero-initialized firmware globals.
+    previous_phase_increment_ = 1;
     high_ = false;
     parameter_ = previous_parameter_ = 0;
     aux_parameter_ = 0;
     discontinuity_depth_ = -16383;
     pitch_ = 60 << 7;
     next_sample_ = 0;
+    previous_shape_ = OSC_SHAPE_SAW;
   }
   
   inline void set_shape(AnalogOscillatorShape shape) {
@@ -150,7 +153,7 @@ class AnalogOscillator {
   int32_t next_sample_;
   
   AnalogOscillatorShape shape_;
-  AnalogOscillatorShape previous_shape_;
+  AnalogOscillatorShape previous_shape_ = OSC_SHAPE_SAW;
   
   static RenderFn fn_table_[];
   

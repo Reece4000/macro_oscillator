@@ -2,6 +2,8 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 
+#include "PluginProcessor.h"
+
 namespace macro_osc
 {
 namespace
@@ -82,7 +84,19 @@ public:
         : juce::StandaloneFilterWindow (title, backgroundColour, std::move (pluginHolderIn))
     {
         setUsingNativeTitleBar (true);
+        // Changing title-bar styles must not add the old title bar's height to
+        // the fixed editor, leaving an empty strip below the controls.
+        if (auto* editor = getAudioProcessor()->getActiveEditor())
+            setContentComponentSize (editor->getWidth(), editor->getHeight());
         hideCustomTitlebarOptionsButton();
+        if (auto* processor = dynamic_cast<macro_osc::MacroOscAudioProcessor*> (getAudioProcessor()))
+            processor->showAudioSettings = [this] { showSafeAudioSettingsDialog(); };
+    }
+
+    ~NativeTitlebarStandaloneWindow() override
+    {
+        if (auto* processor = dynamic_cast<macro_osc::MacroOscAudioProcessor*> (getAudioProcessor()))
+            processor->showAudioSettings = nullptr;
     }
 
     void resized() override

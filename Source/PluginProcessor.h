@@ -1,10 +1,13 @@
 #pragma once
 
 #include "DSP/BraidsVoice.h"
+#include "DSP/BraidsSynthesiser.h"
 #include "DSP/Mseg.h"
+#include "DSP/OutputLimiter.h"
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -14,6 +17,13 @@ namespace macro_osc
 {
 namespace ParamIDs
 {
+static constexpr const char* filterType = "filterType";
+static constexpr const char* filterFrequency = "filterFrequency";
+static constexpr const char* filterQ = "filterQ";
+static constexpr const char* distortionType = "distortionType";
+static constexpr const char* distortionAmount = "distortionAmount";
+static constexpr const char* distortionMix = "distortionMix";
+static constexpr const char* distortionOutput = "distortionOutput";
 static constexpr const char* model = "model";
 static constexpr const char* timbre = "timbre";
 static constexpr const char* color = "color";
@@ -24,6 +34,8 @@ static constexpr const char* level = "level";
 static constexpr const char* coarse = "coarse";
 static constexpr const char* fine = "fine";
 static constexpr const char* portamento = "portamento";
+static constexpr const char* voiceMode = "voiceMode";
+static constexpr const char* voices = "voices";
 static constexpr const char* scale = "scale";
 static constexpr const char* attack = "attack";
 static constexpr const char* decay = "decay";
@@ -40,6 +52,9 @@ static constexpr std::array<const char*, kMsegSlotCount> msegOffset {
 };
 static constexpr std::array<const char*, kMsegSlotCount> msegRate {
     "mseg1Rate", "mseg2Rate", "mseg3Rate"
+};
+static constexpr std::array<const char*, kMsegSlotCount> msegRandom {
+    "mseg1Random", "mseg2Random", "mseg3Random"
 };
 static constexpr std::array<const char*, kMsegSlotCount> msegLoop {
     "mseg1Loop", "mseg2Loop", "mseg3Loop"
@@ -89,6 +104,25 @@ public:
     [[nodiscard]] std::vector<MsegPoint> getMsegPoints (int slotIndex) const;
     [[nodiscard]] std::shared_ptr<const MsegShape> getMsegShape (int slotIndex) const;
     void setMsegPoints (int slotIndex, std::vector<MsegPoint> points, bool notifyEditor = true);
+    [[nodiscard]] int getActiveVoiceCount() const noexcept { return activeVoiceCount.load (std::memory_order_relaxed); }
+    [[nodiscard]] static constexpr int getMaxPolyphony() noexcept { return maxPolyphony; }
+
+    // Every parameter to its default and every modulation shape to the default curve.
+    void resetToDefaults();
+    // Editor preferences, saved with the plug-in state.
+    [[nodiscard]] float getEditorScale() const;
+    void setEditorScale (float scale);
+    [[nodiscard]] bool getTooltipsEnabled() const;
+    void setTooltipsEnabled (bool enabled);
+
+    // Presets are the plug-in state as XML, without the editor preferences.
+    [[nodiscard]] static juce::File getPresetFolder();
+    [[nodiscard]] juce::String getPresetName() const;
+    bool savePreset (const juce::File& file);
+    bool loadPreset (const juce::File& file);
+
+    // Set by the standalone app only; plug-in hosts own the audio and MIDI setup.
+    std::function<void()> showAudioSettings;
 
     static APVTS::ParameterLayout createParameterLayout();
 
@@ -97,6 +131,13 @@ private:
 
     struct RawParameterPointers
     {
+        std::atomic<float>* filterType {};
+        std::atomic<float>* filterFrequency {};
+        std::atomic<float>* filterQ {};
+        std::atomic<float>* distortionType {};
+        std::atomic<float>* distortionAmount {};
+        std::atomic<float>* distortionMix {};
+        std::atomic<float>* distortionOutput {};
         std::atomic<float>* model {};
         std::atomic<float>* timbre {};
         std::atomic<float>* color {};
@@ -107,6 +148,8 @@ private:
         std::atomic<float>* coarse {};
         std::atomic<float>* fine {};
         std::atomic<float>* portamento {};
+        std::atomic<float>* voiceMode {};
+        std::atomic<float>* voices {};
         std::atomic<float>* attack {};
         std::atomic<float>* decay {};
         std::atomic<float>* sustain {};
@@ -115,11 +158,12 @@ private:
         std::array<std::atomic<float>*, kMsegSlotCount> msegAmount {};
         std::array<std::atomic<float>*, kMsegSlotCount> msegOffset {};
         std::array<std::atomic<float>*, kMsegSlotCount> msegRate {};
+        std::array<std::atomic<float>*, kMsegSlotCount> msegRandom {};
         std::array<std::atomic<float>*, kMsegSlotCount> msegLoop {};
         std::array<std::atomic<float>*, kMsegSlotCount> msegSync {};
     };
 
-    juce::Synthesiser synth;
+    BraidsSynthesiser synth;
     APVTS parameters;
     RawParameterPointers rawParameters;
     std::array<BraidsVoice*, maxPolyphony> braidsVoices {};
@@ -127,11 +171,14 @@ private:
     std::array<std::atomic<const MsegShape*>, kMsegSlotCount> currentAudioMsegShapes {};
     std::vector<std::shared_ptr<const MsegShape>> retainedMsegShapes;
     std::atomic<float> currentTempoBpm { 120.0f };
+    std::atomic<int> activeVoiceCount {};
     std::array<float, 2> dcBlockerPreviousInput {};
     std::array<float, 2> dcBlockerPreviousOutput {};
     float dcBlockerCoefficient { 0.995f };
+    OutputLimiter outputLimiter;
 
     void cacheRawParameterPointers();
+    [[nodiscard]] juce::ValueTree createStateTree();
     void updateHostTempo() noexcept;
     void resetOutputDcBlocker() noexcept;
     void applyOutputDcBlocker (juce::AudioBuffer<float>& buffer) noexcept;

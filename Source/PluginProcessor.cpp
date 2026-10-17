@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
+
 #include "PluginEditor.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace macro_osc
@@ -58,6 +60,7 @@ MacroOscAudioProcessor::MacroOscAudioProcessor()
 
 void MacroOscAudioProcessor::prepareToPlay (double sampleRate, int)
 {
+    synth.allNotesOff (0, false);
     synth.setCurrentPlaybackSampleRate (sampleRate);
     for (auto* voice : braidsVoices)
         voice->prepare (sampleRate);
@@ -68,10 +71,14 @@ void MacroOscAudioProcessor::prepareToPlay (double sampleRate, int)
         dcBlockerCoefficient = 0.995f;
 
     resetOutputDcBlocker();
+    outputLimiter.prepare (sampleRate > 0.0 ? sampleRate : 44100.0);
 }
 
 void MacroOscAudioProcessor::releaseResources()
 {
+    synth.allNotesOff (0, false);
+    resetOutputDcBlocker();
+    outputLimiter.reset();
 }
 
 bool MacroOscAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -90,9 +97,15 @@ void MacroOscAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     const auto voiceParameters = buildVoiceParameters();
     for (auto* voice : braidsVoices)
         voice->setParameters (voiceParameters);
+    synth.configure (static_cast<VoiceMode> (juce::jlimit (0, 2, juce::roundToInt (getFloatParameter (rawParameters.voiceMode)))),
+                     juce::roundToInt (getFloatParameter (rawParameters.voices)));
 
     synth.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
     applyOutputDcBlocker (buffer);
+    // Chords and hot distortion settings can sum past full scale; keep the output clean.
+    outputLimiter.process (buffer);
+    activeVoiceCount.store (static_cast<int> (std::count_if (braidsVoices.begin(), braidsVoices.end(),
+        [] (const BraidsVoice* voice) { return voice->isVoiceActive(); })), std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor* MacroOscAudioProcessor::createEditor()
@@ -100,14 +113,95 @@ juce::AudioProcessorEditor* MacroOscAudioProcessor::createEditor()
     return new MacroOscAudioProcessorEditor (*this);
 }
 
-void MacroOscAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+void MacroOscAudioProcessor::resetToDefaults()
+{
+    for (auto* parameter : getParameters())
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter))
+        {
+            ranged->beginChangeGesture();
+            ranged->setValueNotifyingHost (ranged->getDefaultValue());
+            ranged->endChangeGesture();
+        }
+    for (int slot = 0; slot < kMsegSlotCount; ++slot)
+        setMsegPoints (slot, MsegShape::defaultPoints(), true);
+    parameters.state.setProperty ("presetName", "init", nullptr);
+}
+
+float MacroOscAudioProcessor::getEditorScale() const
+{
+    return static_cast<float> (parameters.state.getProperty ("editorScale", 1.0f));
+}
+
+void MacroOscAudioProcessor::setEditorScale (float scale)
+{
+    parameters.state.setProperty ("editorScale", scale, nullptr);
+}
+
+bool MacroOscAudioProcessor::getTooltipsEnabled() const
+{
+    return static_cast<bool> (parameters.state.getProperty ("tooltips", true));
+}
+
+void MacroOscAudioProcessor::setTooltipsEnabled (bool enabled)
+{
+    parameters.state.setProperty ("tooltips", enabled, nullptr);
+}
+
+juce::ValueTree MacroOscAudioProcessor::createStateTree()
 {
     auto state = parameters.copyState();
     for (int slot = 0; slot < kMsegSlotCount; ++slot)
         state.setProperty (msegPointsPropertyName (slot), MsegShape::serialise (getMsegPoints (slot)), nullptr);
+    return state;
+}
 
-    if (auto xml = state.createXml())
+void MacroOscAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    if (auto xml = createStateTree().createXml())
         copyXmlToBinary (*xml, destData);
+}
+
+juce::File MacroOscAudioProcessor::getPresetFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+        .getChildFile ("Macro OSC").getChildFile ("Presets");
+}
+
+juce::String MacroOscAudioProcessor::getPresetName() const
+{
+    return parameters.state.getProperty ("presetName", "init").toString();
+}
+
+bool MacroOscAudioProcessor::savePreset (const juce::File& file)
+{
+    auto state = createStateTree();
+    state.removeProperty ("editorScale", nullptr);
+    state.removeProperty ("tooltips", nullptr);
+    state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    const auto xml = state.createXml();
+    if (xml == nullptr || ! file.getParentDirectory().createDirectory() || ! xml->writeTo (file))
+        return false;
+    parameters.state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    return true;
+}
+
+bool MacroOscAudioProcessor::loadPreset (const juce::File& file)
+{
+    const auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr)
+        return false;
+    auto state = juce::ValueTree::fromXml (*xml);
+    if (! state.isValid() || state.getType() != parameters.state.getType())
+        return false;
+    // Keep this session's editor preferences; take everything else from the file.
+    state.setProperty ("editorScale", getEditorScale(), nullptr);
+    state.setProperty ("tooltips", getTooltipsEnabled(), nullptr);
+    state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
+    juce::MemoryBlock block;
+    if (const auto merged = state.createXml())
+        copyXmlToBinary (*merged, block);
+    setStateInformation (block.getData(), static_cast<int> (block.getSize()));
+    return true;
 }
 
 void MacroOscAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
@@ -126,6 +220,22 @@ void MacroOscAudioProcessor::setStateInformation (const void* data, int sizeInBy
         encodedPoints[static_cast<size_t> (slot)] = state.getProperty (msegPointsPropertyName (slot)).toString();
         if (encodedPoints[static_cast<size_t> (slot)].isEmpty() && slot == 0)
             encodedPoints[static_cast<size_t> (slot)] = state.getProperty ("msegPoints").toString();
+    }
+
+    // Old presets have no insert parameters. Loading one must restore bypass,
+    // even if the current patch has effects enabled.
+    for (const auto* id : { ParamIDs::filterType, ParamIDs::filterFrequency, ParamIDs::filterQ,
+                            ParamIDs::distortionType, ParamIDs::distortionAmount,
+                            ParamIDs::distortionMix, ParamIDs::distortionOutput })
+    {
+        if (! state.getChildWithProperty ("id", id).isValid())
+        {
+            const auto* parameter = parameters.getParameter (id);
+            juce::ValueTree value ("PARAM");
+            value.setProperty ("id", id, nullptr);
+            value.setProperty ("value", parameter->convertFrom0to1 (parameter->getDefaultValue()), nullptr);
+            state.appendChild (value, nullptr);
+        }
     }
 
     parameters.replaceState (state);
@@ -157,6 +267,13 @@ const MsegShape* MacroOscAudioProcessor::getAudioMsegShape (int slotIndex) const
 
 void MacroOscAudioProcessor::cacheRawParameterPointers()
 {
+    rawParameters.filterType = parameters.getRawParameterValue (ParamIDs::filterType);
+    rawParameters.filterFrequency = parameters.getRawParameterValue (ParamIDs::filterFrequency);
+    rawParameters.filterQ = parameters.getRawParameterValue (ParamIDs::filterQ);
+    rawParameters.distortionType = parameters.getRawParameterValue (ParamIDs::distortionType);
+    rawParameters.distortionAmount = parameters.getRawParameterValue (ParamIDs::distortionAmount);
+    rawParameters.distortionMix = parameters.getRawParameterValue (ParamIDs::distortionMix);
+    rawParameters.distortionOutput = parameters.getRawParameterValue (ParamIDs::distortionOutput);
     rawParameters.model = parameters.getRawParameterValue (ParamIDs::model);
     rawParameters.timbre = parameters.getRawParameterValue (ParamIDs::timbre);
     rawParameters.color = parameters.getRawParameterValue (ParamIDs::color);
@@ -167,6 +284,8 @@ void MacroOscAudioProcessor::cacheRawParameterPointers()
     rawParameters.coarse = parameters.getRawParameterValue (ParamIDs::coarse);
     rawParameters.fine = parameters.getRawParameterValue (ParamIDs::fine);
     rawParameters.portamento = parameters.getRawParameterValue (ParamIDs::portamento);
+    rawParameters.voiceMode = parameters.getRawParameterValue (ParamIDs::voiceMode);
+    rawParameters.voices = parameters.getRawParameterValue (ParamIDs::voices);
     rawParameters.attack = parameters.getRawParameterValue (ParamIDs::attack);
     rawParameters.decay = parameters.getRawParameterValue (ParamIDs::decay);
     rawParameters.sustain = parameters.getRawParameterValue (ParamIDs::sustain);
@@ -180,6 +299,7 @@ void MacroOscAudioProcessor::cacheRawParameterPointers()
         rawParameters.msegOffset[index] = parameters.getRawParameterValue (ParamIDs::msegOffset[index]);
         rawParameters.msegRate[index] = parameters.getRawParameterValue (ParamIDs::msegRate[index]);
         rawParameters.msegLoop[index] = parameters.getRawParameterValue (ParamIDs::msegLoop[index]);
+        rawParameters.msegRandom[index] = parameters.getRawParameterValue (ParamIDs::msegRandom[index]);
         rawParameters.msegSync[index] = parameters.getRawParameterValue (ParamIDs::msegSync[index]);
     }
 }
@@ -254,7 +374,7 @@ MacroOscAudioProcessor::APVTS::ParameterLayout MacroOscAudioProcessor::createPar
     APVTS::ParameterLayout layout;
 
     layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParamIDs::model, 1 }, "Model", braidsModelNames(), 34));
+        juce::ParameterID { ParamIDs::model, 1 }, "Model", braidsModelNames(), 0));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { ParamIDs::timbre, 1 }, "Timbre", juce::NormalisableRange<float> { 0.0f, 1.0f }, 64.0f / 127.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -316,12 +436,64 @@ MacroOscAudioProcessor::APVTS::ParameterLayout MacroOscAudioProcessor::createPar
             false));
     }
 
+    // Append new controls so existing host parameter ordering stays intact.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { ParamIDs::filterType, 1 }, "Filter Type",
+        juce::StringArray { "Off", "LP", "BP", "HP" }, 0));
+    auto frequencyRange = juce::NormalisableRange<float> {
+        20.0f, 20000.0f,
+        [] (float lo, float hi, float x) { return lo * std::pow (hi / lo, x); },
+        [] (float lo, float hi, float x) { return std::log (x / lo) / std::log (hi / lo); }
+    };
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::filterFrequency, 1 }, "Filter Frequency", frequencyRange, 16000.0f));
+    auto qRange = juce::NormalisableRange<float> {
+        1.0f, 30.0f,
+        [] (float lo, float hi, float x) { return lo * std::pow (hi / lo, x); },
+        [] (float lo, float hi, float x) { return std::log (x / lo) / std::log (hi / lo); }
+    };
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::filterQ, 1 }, "Filter Q", qRange, 1.0f));
+    juce::StringArray distortionNames;
+    for (const auto name : lodo::engine::fx::distortionNames)
+        distortionNames.add (juce::String (name.data(), name.size()));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { ParamIDs::distortionType, 1 }, "Distortion Type", distortionNames, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::distortionAmount, 1 }, "Distortion Amount",
+        juce::NormalisableRange<float> { 0.0f, 1.0f }, 0.25f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::distortionMix, 1 }, "Distortion Mix",
+        juce::NormalisableRange<float> { 0.0f, 1.0f }, 1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::distortionOutput, 1 }, "Distortion Output",
+        juce::NormalisableRange<float> { 0.0f, 1.0f }, 0.5f));
+
+    // Appended: voice allocation and modulation randomness.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { ParamIDs::voiceMode, 1 }, "Voice Mode", juce::StringArray { "Poly", "Mono", "Legato" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { ParamIDs::voices, 1 }, "Voices", 1, maxPolyphony, maxPolyphony));
+    for (int slot = 0; slot < kMsegSlotCount; ++slot)
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::msegRandom[static_cast<size_t> (slot)], 1 },
+            "MSEG " + juce::String (slot + 1) + " Random",
+            juce::NormalisableRange<float> { 0.0f, 100.0f, 0.1f },
+            0.0f));
+
     return layout;
 }
 
 BraidsVoiceParameters MacroOscAudioProcessor::buildVoiceParameters() const
 {
     BraidsVoiceParameters result;
+    result.effects.filterType = juce::roundToInt (getFloatParameter (rawParameters.filterType));
+    result.effects.filterFrequency = getFloatParameter (rawParameters.filterFrequency);
+    result.effects.filterQ = getFloatParameter (rawParameters.filterQ);
+    result.effects.distortionType = juce::roundToInt (getFloatParameter (rawParameters.distortionType));
+    result.effects.distortionAmount = getFloatParameter (rawParameters.distortionAmount);
+    result.effects.distortionMix = getFloatParameter (rawParameters.distortionMix);
+    result.effects.distortionOutput = getFloatParameter (rawParameters.distortionOutput);
     result.model = juce::roundToInt (getFloatParameter (rawParameters.model));
     result.timbre = getFloatParameter (rawParameters.timbre);
     result.color = getFloatParameter (rawParameters.color);
@@ -350,6 +522,7 @@ BraidsVoiceParameters MacroOscAudioProcessor::buildVoiceParameters() const
             ? msegSyncedBeatsToSeconds (rateValue, currentTempoBpm.load (std::memory_order_relaxed))
             : rateValue;
         target.loop = getFloatParameter (rawParameters.msegLoop[index]) >= 0.5f;
+        target.randomPercent = getFloatParameter (rawParameters.msegRandom[index]);
         target.shape = getAudioMsegShape (slot);
     }
 

@@ -11,6 +11,7 @@
 namespace macro_osc
 {
 inline constexpr int kMsegSlotCount = 3;
+inline constexpr int kMsegMaxPoints = 32;
 
 struct MsegSyncedDuration
 {
@@ -118,6 +119,41 @@ struct MsegShape
         return (evaluateUnipolar (phase) * 2.0f) - 1.0f;
     }
 
+    // Each point moved by its own offset (-1..1 on both axes) scaled by amount.
+    // Values move by up to half the full range; inner points also move in time,
+    // by up to half the gap to their nearer neighbour, so they never cross.
+    [[nodiscard]] float evaluateUnipolar (float phase, const std::array<MsegPoint, kMsegMaxPoints>& offsets,
+                                          float amount) const noexcept
+    {
+        if (amount <= 0.0f || points.empty())
+            return evaluateUnipolar (phase);
+
+        const auto moved = [&] (size_t i)
+        {
+            auto point = points[i];
+            point.y = juce::jlimit (0.0f, 1.0f, point.y + offsets[i].y * amount * 0.5f);
+            if (i > 0 && i + 1 < points.size())
+                point.x += offsets[i].x * amount * 0.5f * std::min (point.x - points[i - 1].x, points[i + 1].x - point.x);
+            return point;
+        };
+
+        const float x = juce::jlimit (0.0f, 1.0f, phase);
+        auto left = moved (0);
+        if (x <= left.x)
+            return left.y;
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            const auto right = moved (i);
+            if (x <= right.x)
+            {
+                const float width = juce::jmax (0.0001f, right.x - left.x);
+                return left.y + (right.y - left.y) * juce::jlimit (0.0f, 1.0f, (x - left.x) / width);
+            }
+            left = right;
+        }
+        return left.y;
+    }
+
     [[nodiscard]] static std::vector<MsegPoint> defaultPoints()
     {
         return {
@@ -139,6 +175,11 @@ struct MsegShape
             point.y = juce::jlimit (0.0f, 1.0f, point.y);
         }
 
+        // A single point is a constant: no movement, just a level (or, with
+        // random, a fresh level for every note).
+        if (input.size() == 1)
+            return { { 0.5f, input.front().y } };
+
         std::stable_sort (input.begin(), input.end(), [] (const auto& a, const auto& b)
         {
             return a.x < b.x;
@@ -157,7 +198,7 @@ struct MsegShape
                 && std::abs (point.x - result.back().x) < 0.000001f
                 && std::abs (point.y - result.back().y) < 0.000001f)
                 result.back() = point;
-            else if (result.size() < 31)
+            else if (result.size() < static_cast<size_t> (kMsegMaxPoints - 1))
                 result.push_back (point);
         }
         result.push_back ({ 1.0f, input.back().y });
@@ -207,11 +248,21 @@ enum class MsegDestination : int
     color,
     modulation,
     fm,
-    level
+    level,
+    // Append only: existing preset destination indices must remain stable.
+    filterFrequency,
+    filterQ,
+    distortionAmount,
+    distortionMix,
+    distortionOutput,
+    filterType,
+    distortionType
 };
 
 [[nodiscard]] inline juce::StringArray msegDestinationNames()
 {
-    return { "Off", "Pitch", "Model", "Timbre", "Color", "Mod", "FM", "Level" };
+    return { "Off", "Pitch", "Model", "Timbre", "Color", "Mod", "FM", "Level",
+             "Filter Freq", "Filter Q", "Dist Amount", "Dist Mix", "Dist Output",
+             "Filter Type", "Dist Type" };
 }
 } // namespace macro_osc
