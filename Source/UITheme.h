@@ -205,7 +205,7 @@ public:
         }
         g.setFont (getPopupMenuFont());
         g.setColour ((hover ? background : item.isTicked ? turquoise : ink).withMultipliedAlpha (item.isEnabled ? 1.0f : 0.4f));
-        g.drawText (models ? item.text : item.text.toLowerCase(), label, juce::Justification::centredLeft);
+        g.drawText (item.text.toLowerCase(), label, juce::Justification::centredLeft);
         if (item.subMenu != nullptr)
         {
             const juce::Point<float> tip (static_cast<float> (area.getRight() - 12), static_cast<float> (area.getCentreY()));

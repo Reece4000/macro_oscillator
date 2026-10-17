@@ -438,7 +438,7 @@ void ModelStrip::mouseMove (const juce::MouseEvent& event)
     if (model == hovered)
         return;
     hovered = model;
-    setTooltip (model >= 0 ? juce::String (model).paddedLeft ('0', 2) + "  " + braidsModelNames()[model] : juce::String());
+    setTooltip (model >= 0 ? juce::String (model).paddedLeft ('0', 2) + "  " + braidsModelNames()[model].toLowerCase() : juce::String());
     repaint();
 }
 
