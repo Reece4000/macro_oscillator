@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<MacroOscState msegPoints1="0.000000,0.498827;0.106345,0.557078;0.500000,0.484037;0.722795,0.406744;0.864766,0.565304;1.000000,0.484037"
+               msegPoints2="0.000000,0.802421;0.224624,0.607286;0.552908,0.397406;1.000000,0.500000"
+               msegPoints3="0.000000,0.500000;0.250000,1.000000;0.650000,0.100000;1.000000,0.500000" presetName="Unstable Tines">
+  <PARAM id="attack" value="0.0"/>
+  <PARAM id="coarse" value="0.0"/>
+  <PARAM id="color" value="0.4607842862606049"/>
+  <PARAM id="decay" value="1.192000031471252"/>
+  <PARAM id="fine" value="4.74974513053894e-8"/>
+  <PARAM id="fmAmount" value="0.02954542450606823"/>
+  <PARAM id="fmRatio" value="1.00000011920929"/>
+  <PARAM id="level" value="0.8000000715255737"/>
+  <PARAM id="model" value="33.0"/>
+  <PARAM id="modulation" value="0.06619338691234589"/>
+  <PARAM id="mseg1Amount" value="2.800001621246338"/>
+  <PARAM id="mseg1Destination" value="1.0"/>
+  <PARAM id="mseg1Loop" value="1.0"/>
+  <PARAM id="mseg1Offset" value="1.490116119384766e-6"/>
+  <PARAM id="mseg1Rate" value="2.846000194549561"/>
+  <PARAM id="mseg2Amount" value="40.60000228881836"/>
+  <PARAM id="mseg2Destination" value="8.0"/>
+  <PARAM id="mseg2Loop" value="1.0"/>
+  <PARAM id="mseg2Offset" value="1.490116119384766e-6"/>
+  <PARAM id="mseg2Rate" value="6.069000244140625"/>
+  <PARAM id="mseg3Amount" value="50.00000381469727"/>
+  <PARAM id="mseg3Destination" value="0.0"/>
+  <PARAM id="mseg3Loop" value="1.0"/>
+  <PARAM id="mseg3Offset" value="1.490116119384766e-6"/>
+  <PARAM id="mseg3Rate" value="0.9999999403953552"/>
+  <PARAM id="portamento" value="0.0"/>
+  <PARAM id="release" value="3.961000204086304"/>
+  <PARAM id="scale" value="1.0"/>
+  <PARAM id="sustain" value="0.3617911040782928"/>
+  <PARAM id="timbre" value="0.913765549659729"/>
+  <PARAM id="mseg1Sync" value="0.0"/>
+  <PARAM id="mseg2Sync" value="0.0"/>
+  <PARAM id="mseg3Sync" value="0.0"/>
+  <PARAM id="filterType" value="1.0"/>
+  <PARAM id="filterFrequency" value="1340.26904296875"/>
+  <PARAM id="filterQ" value="1.0"/>
+  <PARAM id="distortionType" value="5.0"/>
+  <PARAM id="distortionAmount" value="0.3150574266910553"/>
+  <PARAM id="distortionMix" value="0.6103783249855042"/>
+  <PARAM id="distortionOutput" value="1.0"/>
+  <PARAM id="voiceMode" value="0.0"/>
+  <PARAM id="voices" value="8.0"/>
+  <PARAM id="mseg1Random" value="15.5"/>
+  <PARAM id="mseg2Random" value="19.39999961853027"/>
+  <PARAM id="mseg3Random"/>
+</MacroOscState>

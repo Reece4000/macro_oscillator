@@ -176,6 +176,7 @@ bool MacroOscAudioProcessor::savePreset (const juce::File& file)
 {
     auto state = createStateTree();
     state.removeProperty ("editorScale", nullptr);
+    state.removeProperty ("uiScale", nullptr); // the key earlier builds used
     state.removeProperty ("tooltips", nullptr);
     state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
     const auto xml = state.createXml();
@@ -194,6 +195,7 @@ bool MacroOscAudioProcessor::loadPreset (const juce::File& file)
     if (! state.isValid() || state.getType() != parameters.state.getType())
         return false;
     // Keep this session's editor preferences; take everything else from the file.
+    state.removeProperty ("uiScale", nullptr);
     state.setProperty ("editorScale", getEditorScale(), nullptr);
     state.setProperty ("tooltips", getTooltipsEnabled(), nullptr);
     state.setProperty ("presetName", file.getFileNameWithoutExtension(), nullptr);
