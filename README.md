@@ -85,7 +85,7 @@ The VST3 test loads the built bundle and plays it through the plugin interface.
 
 ## Technical notes
 
-Each voice runs a Braids macro oscillator, then the amplitude envelope, then distortion and filter in Lodo's distortion-then-filter order. Both effects default to Off. Distortion Output affects only the wet signal, with unity gain at 50%. Filter Frequency spans 20–20,000 Hz and Q spans 1–30, and frequency modulation uses a logarithmic range. Effect type changes crossfade, and continuous controls are smoothed. The distortion and filter displays show base settings; MSEG modulation is applied per voice.
+Each voice runs a Braids macro oscillator, then the amplitude envelope, then distortion and filter. Both effects default to Off. Distortion Output affects only the wet signal, with unity gain at 50%. Filter Frequency spans 20–20,000 Hz and Q spans 1–30, and frequency modulation uses a logarithmic range. Effect type changes crossfade, and continuous controls are smoothed. The distortion and filter displays show base settings; MSEG modulation is applied per voice.
 
 In poly mode, voices rotate through free slots. Fresh notes reset oscillator history, MIDI is handled at exact sample positions, and stealing a busy voice crossfades it out over 5 ms. Mono and legato play the newest key and return to keys still held. Mono retriggers the envelope; legato does not. Glide takes its set time regardless of interval, starting from the current pitch.
 
@@ -93,13 +93,10 @@ Each voice keeps about 9 dB of headroom, and filter resonance is gain-compensate
 
 When using VCV Host, pitch and gate must arrive together. If V/OCT passes through a quantizer but GATE connects directly, Host can trigger the previous pitch on that polyphonic channel. Put a VCV VCA at 100% gain in the gate path (signal input, CV unpatched), or connect both signals directly. See the [Rack timing reproduction](Tests/Diagnostics/RackCvTiming.md).
 
-Braids continuity and initialization fixes are ported from Lodo commit `5993c99` and the matching Taperage changes.
-
 ## Credits
 
 - [Mutable Instruments Braids](https://pichenettes.github.io/mutable-instruments-documentation/modules/braids/) by Émilie Gillet: oscillator DSP (MIT).
-- [Airwindows](https://www.airwindows.com) by Chris Johnson: 13 distortion algorithms (MIT), adapted via Lodo.
-- Lodo: distortion bank, filter and control profiles.
+- [Airwindows](https://www.airwindows.com) by Chris Johnson: 13 distortion algorithms (MIT).
 - [JUCE](https://juce.com): plugin framework.
 - [Geist](https://vercel.com/font) and [DSEG](https://www.keshikan.net/fonts-e.html): fonts (SIL OFL).
 
